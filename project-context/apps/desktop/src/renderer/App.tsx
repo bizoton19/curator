@@ -735,7 +735,6 @@ export default function App() {
     context: false
   });
   const [coreOpen, setCoreOpen] = useState(true);
-  const [otherOpen, setOtherOpen] = useState(true);
   const [contextOpen, setContextOpen] = useState(true);
   const [templatesOpen, setTemplatesOpen] = useState(true);
   const [csvPreviewOpen, setCsvPreviewOpen] = useState(false);
@@ -915,7 +914,8 @@ export default function App() {
         resource: "workspace",
         action: "read",
         rationale:
-          "Allows Curator to load baseline, requirements, and tasks from this workspace."
+          "Curator needs access to load your estimate files from this workspace.",
+        workspacePath: entry.path
       });
       setPermissionStatus(permitted ? "granted" : "denied");
       if (!permitted) {
@@ -1020,7 +1020,11 @@ export default function App() {
         return;
       }
       
-      const summary = { id: entry.id || "unknown", name: entry.name, path: entry.root };
+      const summary: WorkspaceSummary = {
+        id: entry.id || "unknown",
+        name: entry.name ?? "Workspace",
+        path: entry.root
+      };
       
       setWorkspaceList((current) => {
         const exists = current.some((item) => item.id === summary.id);
@@ -1064,7 +1068,7 @@ export default function App() {
   };
 
   const focusContextCollection = () => {
-    setLeftSidebarTab("workspace");
+    setLeftSidebarTab("workspaces");
     setShowWizard(true);
     setWizardStep("context");
     setStatusMessage(
@@ -1208,7 +1212,8 @@ export default function App() {
     const permitted = await permissionGate.request({
       resource: "workspace",
       action: "write",
-      rationale: "Allows Curator to save updates to this workspace."
+      rationale: "Curator needs to save your changes to this workspace.",
+      workspacePath: workspaceRoot
     });
     if (!permitted) {
       setPermissionStatus("denied");
@@ -1259,7 +1264,8 @@ export default function App() {
     const permitted = await permissionGate.request({
       resource: "workspace",
       action: "read",
-      rationale: "Allows Curator to load this file for editing."
+      rationale: "Curator needs to load this file for editing.",
+      workspacePath: workspaceRoot
     });
     if (!permitted) {
       setPermissionStatus("denied");
@@ -1302,7 +1308,8 @@ export default function App() {
     const permitted = await permissionGate.request({
       resource: "workspace",
       action: "write",
-      rationale: "Allows Curator to save updates to this file."
+      rationale: "Curator needs to save your changes.",
+      workspacePath: workspaceRoot
     });
     if (!permitted) {
       setPermissionStatus("denied");
@@ -1349,7 +1356,8 @@ export default function App() {
     const permitted = await permissionGate.request({
       resource: "workspace",
       action: "write",
-      rationale: "Allows Curator to create missing workspace files."
+      rationale: "Curator needs to create the required estimate files.",
+      workspacePath: workspaceRoot
     });
     if (!permitted) {
       setPermissionStatus("denied");
@@ -1413,8 +1421,9 @@ export default function App() {
       action: "write",
       rationale:
         target === "context"
-          ? "Allows Curator to copy context documents into this workspace."
-          : "Allows Curator to copy templates into this workspace."
+          ? "Curator needs to import your reference documents."
+          : "Curator needs to import the template.",
+      workspacePath: workspaceRoot
     });
     if (!permitted) {
       setPermissionStatus("denied");
@@ -1478,8 +1487,8 @@ export default function App() {
     const permitted = await permissionGate.request({
       resource: "workspace",
       action: "write",
-      rationale:
-        "Allows Curator to copy context documents into this workspace."
+      rationale: "Curator needs to import your reference documents.",
+      workspacePath: workspaceRoot
     });
     if (!permitted) {
       setPermissionStatus("denied");
@@ -1515,7 +1524,8 @@ export default function App() {
     const permitted = await permissionGate.request({
       resource: "workspace",
       action: "write",
-      rationale: "Allows Curator to copy templates into this workspace."
+      rationale: "Curator needs to import the template.",
+      workspacePath: workspaceRoot
     });
     if (!permitted) {
       setPermissionStatus("denied");
@@ -1551,7 +1561,8 @@ export default function App() {
     const permitted = await permissionGate.request({
       resource: "workspace",
       action: "write",
-      rationale: "Allows Curator to create the cost estimation markdown file."
+      rationale: "Curator needs to create the cost estimate file.",
+      workspacePath: workspaceRoot
     });
     if (!permitted) {
       setPermissionStatus("denied");
@@ -1580,11 +1591,11 @@ export default function App() {
             );
         return { ...current, markdownFiles: updated };
       });
-      setDocxStatus("Cost estimate markdown created.");
+      setDocxStatus("Cost estimate draft created.");
       setPermissionStatus("granted");
     } catch (error) {
       setDocxStatus(
-        error instanceof Error ? error.message : "Markdown generation failed."
+        error instanceof Error ? error.message : "Draft generation failed."
       );
     }
   };
@@ -1599,7 +1610,8 @@ export default function App() {
     const permitted = await permissionGate.request({
       resource: "workspace",
       action: "write",
-      rationale: "Allows Curator to generate the DOCX output."
+      rationale: "Curator needs to export your estimate document.",
+      workspacePath: workspaceRoot
     });
     if (!permitted) {
       setPermissionStatus("denied");
@@ -1954,63 +1966,25 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
   };
 
   const startTrainingMode = async () => {
-    // Save current drafts so we can restore after training if needed
+    // Guide Mode: workspace-first onboarding instead of a separate training workspace
     setTrainingOriginalDrafts({ ...drafts });
-    setStatusMessage("Creating training workspace...");
-    
-    try {
-      // Create a dedicated training workspace with all example content
-      const trainingWorkspace = await window.curator?.createTrainingWorkspace({
-        baseline: TRAINING_BASELINE,
-        requirements: TRAINING_REQUIREMENTS,
-        tasks: TRAINING_TASKS,
-        contextDocuments: [
-          { name: "azure-architecture.md", contents: TRAINING_CONTEXT_AZURE },
-          { name: "labor-rates.md", contents: TRAINING_CONTEXT_LABOR },
-          { name: "privacy-requirements.md", contents: TRAINING_CONTEXT_PRIVACY }
-        ],
-        costEstimate: TRAINING_COST_ESTIMATE
-      });
-      
-      if (trainingWorkspace) {
-        // Load the training workspace
-        setWorkspace(trainingWorkspace);
-        setActiveWorkspaceId("training");
-        setDrafts({
-          baseline: trainingWorkspace.files.baseline.contents,
-          requirements: trainingWorkspace.files.requirements.contents,
-          tasks: trainingWorkspace.files.tasks.contents
-        });
-        
-        // Update workspace list to include training workspace
-        setWorkspaceList((current) => {
-          const exists = current.some((ws) => ws.id === "training");
-          if (exists) return current;
-          return [
-            ...current,
-            { id: "training", name: "Training Workspace", path: trainingWorkspace.root }
-          ];
-        });
-      }
-    } catch (error) {
-      console.error("Failed to create training workspace:", error);
-      // Fallback: just populate drafts locally
-      setDrafts({
-        baseline: TRAINING_BASELINE,
-        requirements: TRAINING_REQUIREMENTS,
-        tasks: TRAINING_TASKS
-      });
+
+    if (!workspace) {
+      setStatusMessage(
+        "Let’s get started by creating a workspace. Use the + tab in the left sidebar to name your first workspace."
+      );
+    } else {
+      setStatusMessage(
+        `Guide Mode started for "${workspace.name ?? "current workspace"}". We’ll walk through baseline, context, requirements, tasks, and a first estimate.`
+      );
     }
-    
-    // Set training mode state
+
     setTrainingMode(true);
     setTrainingStepIndex(0);
     setShowWizard(true);
     setWizardStep("baseline");
     setLeftSidebarTab("steps");
     openCopilotPanel();
-    
-    setStatusMessage("Training mode started. Follow the guided steps.");
   };
 
   const navigateToTrainingStep = (step: typeof TRAINING_STEPS[number]) => {
@@ -2031,7 +2005,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
       setShowWizard(true);
       setShowDocxFlow(false);
     } else if (step.highlight === "estimate" || step.highlight === "export") {
-      // Show the cost estimate file in preview mode
+      // Show the cost estimate view for the current workspace
       setShowWizard(false);
       setShowDocxFlow(false);
       openCopilotPanel();
@@ -2040,6 +2014,10 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
       );
       if (costEstimateFile) {
         openSupplementalFile(costEstimateFile);
+      } else {
+        setStatusMessage(
+          "No estimate draft found yet. Use the Copilot panel to queue a first cost-estimate.md."
+        );
       }
     } else if (step.highlight === "chat") {
       setShowWizard(false);
@@ -2238,8 +2216,8 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
     const permitted = await permissionGate.request({
       resource: "workspace",
       action: "write",
-      rationale:
-        "Allows Curator to create a new context document in this workspace."
+      rationale: "Curator needs to create a reference document.",
+      workspacePath: workspaceRoot
     });
     if (!permitted) {
       setPermissionStatus("denied");
@@ -2366,12 +2344,12 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
     }
     if (activeEditor.isMarkdown) {
       return isContext
-        ? "Context document used to ground the estimator with domain knowledge."
-        : "Markdown file in the workspace.";
+        ? "Supporting document with domain knowledge for the estimator."
+        : "Text file in the workspace.";
     }
     return isContext
-      ? "Context document used to ground the estimator with domain knowledge."
-      : "Plain text file in the workspace.";
+      ? "Supporting document with domain knowledge for the estimator."
+      : "Text file in the workspace.";
   })();
   const csvPreviewRows = useMemo(() => {
     if (!csvPreviewEnabled || !csvPreviewOpen) return null;
@@ -2565,17 +2543,26 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                   <button
                     className="sidebar-icon-btn"
                     onClick={() => {
-                      const newState = !(coreOpen && otherOpen && contextOpen && templatesOpen);
+                      const newState = !(coreOpen && contextOpen && templatesOpen);
                       setCoreOpen(newState);
-                      setOtherOpen(newState);
                       setContextOpen(newState);
                       setTemplatesOpen(newState);
                     }}
                     data-tooltip="Toggle all folders"
                   >
-                    <span style={{ fontSize: "14px", lineHeight: 1 }}>
-                      {coreOpen && otherOpen && contextOpen && templatesOpen ? "▾" : "▸"}
-                    </span>
+                    <svg className="sidebar-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      {coreOpen && contextOpen && templatesOpen ? (
+                        <>
+                          <polyline points="6 9 12 15 18 9" />
+                          <line x1="6" y1="4" x2="18" y2="4" />
+                        </>
+                      ) : (
+                        <>
+                          <polyline points="9 6 15 12 9 18" />
+                          <line x1="4" y1="6" x2="4" y2="18" />
+                        </>
+                      )}
+                    </svg>
                   </button>
                   <button
                     className="sidebar-icon-btn"
@@ -2629,207 +2616,153 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                             ) : null}
 
                             <div className="file-tree">
-                              <div className="tree-item">
+                              <div className="tree-section">
                                 <button
-                                  className="tree-row tree-folder"
+                                  className="tree-section-header"
                                   onClick={() => setCoreOpen((prev) => !prev)}
                                 >
-                                  <span className="tree-caret">
-                                    {coreOpen ? "▾" : "▸"}
-                                  </span>
-                                  <span className="tree-label">
-                                    Core Markdown
-                                  </span>
+                                  <svg className="tree-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    {coreOpen ? <polyline points="6 9 12 15 18 9" /> : <polyline points="9 6 15 12 9 18" />}
+                                  </svg>
+                                  <span>Core files</span>
                                 </button>
-                                {coreOpen ? (
-                                  <div className="tree-children">
-                                    {WORKSPACE_FILE_ORDER.map((id) => (
-                                      <button
-                                        key={id}
-                                        className={`tree-row tree-file ${
-                                          id === activeFileId ? "active" : ""
-                                        }`}
-                                        onClick={() => handleSwitchFile(id)}
-                                      >
-                                        <span className="tree-label">
-                                          {id}.md
-                                        </span>
-                                        <span className="tree-badges">
-                                          {workspace?.missing.includes(id) ? (
-                                            <span className="badge badge--missing">
-                                              missing
-                                            </span>
-                                          ) : null}
-                                          {workspace && isDirty(id) ? (
-                                            <span className="badge badge--dirty">
-                                              dirty
-                                            </span>
-                                          ) : null}
-                                        </span>
-                                      </button>
-                                    ))}
-                                  </div>
-                                ) : null}
-                              </div>
-
-                              <div className="tree-item">
-                                <button
-                                  className="tree-row tree-folder"
-                                  onClick={() => setOtherOpen((prev) => !prev)}
-                                >
-                                  <span className="tree-caret">
-                                    {otherOpen ? "▾" : "▸"}
-                                  </span>
-                                  <span className="tree-label">
-                                    Other Markdown
-                                  </span>
-                                </button>
-                                {otherOpen ? (
-                                  <div className="tree-children">
-                                    {workspace?.markdownFiles.length ? (
-                                      workspace.markdownFiles.map((file) => (
+                                {coreOpen && (
+                                  <div className="tree-section-children">
+                                    {WORKSPACE_FILE_ORDER.map((id) => {
+                                      const isSelected = activeEditor.kind === "core" && activeEditor.id === id;
+                                      return (
                                         <button
-                                          key={file.path}
-                                          className="tree-row tree-file"
-                                          onClick={() =>
-                                            openSupplementalFile(file)
-                                          }
+                                          key={id}
+                                          className={`tree-file-row ${isSelected ? "tree-file-row--selected" : ""}`}
+                                          onClick={() => handleSwitchFile(id)}
                                         >
-                                          <span className="tree-label">
-                                            {file.name}
-                                          </span>
+                                          <svg className="tree-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                            <polyline points="14 2 14 8 20 8" />
+                                          </svg>
+                                          <span className="tree-file-name">{id}.md</span>
+                                          {workspace?.missing.includes(id) && (
+                                            <span className="tree-badge tree-badge--missing">missing</span>
+                                          )}
+                                          {workspace && isDirty(id) && (
+                                            <span className="tree-badge tree-badge--unsaved">unsaved</span>
+                                          )}
                                         </button>
-                                      ))
-                                    ) : (
-                                      <div className="tree-empty">
-                                        No additional markdown files.
-                                      </div>
-                                    )}
+                                      );
+                                    })}
                                   </div>
-                                ) : null}
+                                )}
                               </div>
 
-                              <div className="tree-item">
-                                <div className="tree-row-group">
+                              <div className="tree-section">
+                                <div className="tree-section-header-row">
                                   <button
-                                    className="tree-row tree-folder"
-                                    onClick={() =>
-                                      setContextOpen((prev) => !prev)
-                                    }
+                                    className="tree-section-header"
+                                    onClick={() => setContextOpen((prev) => !prev)}
                                   >
-                                    <span className="tree-caret">
-                                      {contextOpen ? "▾" : "▸"}
-                                    </span>
-                                    <span className="tree-label">
-                                      Context Documents
-                                    </span>
+                                    <svg className="tree-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                      {contextOpen ? <polyline points="6 9 12 15 18 9" /> : <polyline points="9 6 15 12 9 18" />}
+                                    </svg>
+                                    <span>Supporting documents</span>
                                   </button>
                                   <button
-                                    className="tree-action"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      startContextUpload();
-                                    }}
+                                    className="tree-section-action"
+                                    onClick={startContextUpload}
+                                    data-tooltip="Import reference files (rate cards, prior estimates, architecture docs)"
                                   >
-                                    Add Files
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                      <line x1="12" y1="5" x2="12" y2="19" />
+                                      <line x1="5" y1="12" x2="19" y2="12" />
+                                    </svg>
                                   </button>
                                 </div>
-                                {contextOpen ? (
-                                  <div className="tree-children">
+                                {contextOpen && (
+                                  <div className="tree-section-children">
                                     <div
-                                      className={`tree-dropzone ${
-                                        contextDragActive
-                                          ? "dropzone--active"
-                                          : ""
-                                      }`}
-                                      onDragOver={(event) => {
-                                        event.preventDefault();
-                                        setContextDragActive(true);
-                                      }}
-                                      onDragLeave={() =>
-                                        setContextDragActive(false)
-                                      }
-                                      onDrop={(event) =>
-                                        handleDrop(event, "context")
-                                      }
+                                      className={`tree-drop-area ${contextDragActive ? "tree-drop-area--active" : ""}`}
+                                      onDragOver={(e) => { e.preventDefault(); setContextDragActive(true); }}
+                                      onDragLeave={() => setContextDragActive(false)}
+                                      onDrop={(e) => handleDrop(e, "context")}
                                     >
-                                      Drop .txt, .md, .cs, .js, .json, .yaml,
-                                      etc.
+                                      Drop files here
                                     </div>
                                     {workspace?.contextDocuments.length ? (
-                                      workspace.contextDocuments.map((file) => (
-                                        <button
-                                          key={file.path}
-                                          className="tree-row tree-file"
-                                          onClick={() =>
-                                            openSupplementalFile(file)
-                                          }
-                                        >
-                                          <span className="tree-label">
-                                            {file.name}
-                                          </span>
-                                        </button>
-                                      ))
+                                      workspace.contextDocuments.map((file) => {
+                                        const isSelected = activeEditor.kind === "supplemental" && activeEditor.file.path === file.path;
+                                        return (
+                                          <button
+                                            key={file.path}
+                                            className={`tree-file-row ${isSelected ? "tree-file-row--selected" : ""}`}
+                                            onClick={() => openSupplementalFile(file)}
+                                          >
+                                            <svg className="tree-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                              <polyline points="14 2 14 8 20 8" />
+                                            </svg>
+                                            <span className="tree-file-name">{file.name}</span>
+                                          </button>
+                                        );
+                                      })
                                     ) : (
-                                      <div className="tree-empty">
-                                        No context documents yet.
-                                      </div>
+                                      <div className="tree-empty-hint">No documents yet</div>
                                     )}
+                                    {workspace?.markdownFiles.length ? (
+                                      workspace.markdownFiles.map((file) => {
+                                        const isSelected = activeEditor.kind === "supplemental" && activeEditor.file.path === file.path;
+                                        return (
+                                          <button
+                                            key={file.path}
+                                            className={`tree-file-row ${isSelected ? "tree-file-row--selected" : ""}`}
+                                            onClick={() => openSupplementalFile(file)}
+                                          >
+                                            <svg className="tree-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                              <polyline points="14 2 14 8 20 8" />
+                                            </svg>
+                                            <span className="tree-file-name">{file.name}</span>
+                                          </button>
+                                        );
+                                      })
+                                    ) : null}
                                   </div>
-                                ) : null}
+                                )}
                               </div>
 
-                              <div className="tree-item">
+                              <div className="tree-section">
                                 <button
-                                  className="tree-row tree-folder"
-                                  onClick={() =>
-                                    setTemplatesOpen((prev) => !prev)
-                                  }
+                                  className="tree-section-header"
+                                  onClick={() => setTemplatesOpen((prev) => !prev)}
                                 >
-                                  <span className="tree-caret">
-                                    {templatesOpen ? "▾" : "▸"}
-                                  </span>
-                                  <span className="tree-label">Templates</span>
+                                  <svg className="tree-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    {templatesOpen ? <polyline points="6 9 12 15 18 9" /> : <polyline points="9 6 15 12 9 18" />}
+                                  </svg>
+                                  <span>Export templates</span>
                                 </button>
-                                {templatesOpen ? (
-                                  <div className="tree-children">
+                                {templatesOpen && (
+                                  <div className="tree-section-children">
                                     <div
-                                      className={`tree-dropzone ${
-                                        templateDragActive
-                                          ? "dropzone--active"
-                                          : ""
-                                      }`}
-                                      onDragOver={(event) => {
-                                        event.preventDefault();
-                                        setTemplateDragActive(true);
-                                      }}
-                                      onDragLeave={() =>
-                                        setTemplateDragActive(false)
-                                      }
-                                      onDrop={(event) =>
-                                        handleDrop(event, "template")
-                                      }
+                                      className={`tree-drop-area ${templateDragActive ? "tree-drop-area--active" : ""}`}
+                                      onDragOver={(e) => { e.preventDefault(); setTemplateDragActive(true); }}
+                                      onDragLeave={() => setTemplateDragActive(false)}
+                                      onDrop={(e) => handleDrop(e, "template")}
                                     >
-                                      Drop .docx or .dot templates
+                                      Drop .docx templates
                                     </div>
                                     {workspace?.templates.length ? (
                                       workspace.templates.map((file) => (
-                                        <div
-                                          key={file.path}
-                                          className="tree-row tree-file"
-                                        >
-                                          <span className="tree-label">
-                                            {file.name}
-                                          </span>
+                                        <div key={file.path} className="tree-file-row">
+                                          <svg className="tree-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                            <polyline points="14 2 14 8 20 8" />
+                                          </svg>
+                                          <span className="tree-file-name">{file.name}</span>
                                         </div>
                                       ))
                                     ) : (
-                                      <div className="tree-empty">
-                                        No templates yet.
-                                      </div>
+                                      <div className="tree-empty-hint">No templates yet</div>
                                     )}
                                   </div>
-                                ) : null}
+                                )}
                               </div>
                             </div>
                           </div>
@@ -2870,18 +2803,6 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
             </div>
           )}
 
-          <div className="sidebar-status">
-            <div className="sidebar-status-row">
-              <label>Permission gate</label>
-              <span className={`status status--${permissionStatus}`}>
-                {permissionStatus === "unknown"
-                  ? "Not requested"
-                  : permissionStatus === "granted"
-                  ? "Granted"
-                  : "Denied"}
-              </span>
-            </div>
-          </div>
           {statusMessage ? (
             <div className="sidebar-status">
               <div className="sidebar-status-row">
@@ -2897,13 +2818,14 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                <button
                 className="sidebar-footer-btn"
                 onClick={startTrainingMode}
-                data-tooltip="Start guided training"
+                data-tooltip="Walk through creating a workspace and generating your first estimate"
               >
                 <svg className="sidebar-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
-                  <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M12 16v-4"/>
+                  <path d="M12 8h.01"/>
                 </svg>
-                Training Mode
+                Guide Mode
               </button>
             </div>
           )}
@@ -2917,7 +2839,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                   <div>
                     <h2>Generate DOCX</h2>
                     <p>
-                      Choose a template, generate a cost estimation markdown,
+                      Choose a template, generate your cost estimate draft,
                       and create a DOCX you can open in Word or Pages.
                     </p>
                   </div>
@@ -2925,7 +2847,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
 
                 <div className="setup-content">
                   <div className="setup-card">
-                    <h3>Cost estimation markdown</h3>
+                    <h3>Cost estimate draft</h3>
                     <p>
                       Review or edit your estimate before generating the final
                       DOCX.
@@ -3007,14 +2929,14 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
 
                   {docxReady ? (
                     <div className="setup-card">
-                      <h3>Refine with the estimator agent</h3>
+                      <h3>Refine with the copilot</h3>
                       <p>
-                        Chat with the cost estimator to refine the DOCX or any
+                        Chat with the copilot to refine your estimate or any
                         other workspace file.
                       </p>
                       <div className="setup-actions">
                         <button onClick={startChatRefinement}>
-                          Chat with estimator
+                          Open chat
                         </button>
                       </div>
                     </div>
@@ -3247,8 +3169,8 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                           </div>
                           {guideOpenByStep.context && (
                             <p>
-                              Context documents help the agent become both a
-                              business and technical subject‑matter expert. The
+                              Supporting documents help the copilot become both a
+                              business and technical subject-matter expert. The
                               richer the context, the more accurate the estimate.
                             </p>
                           )}
@@ -3298,8 +3220,8 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                           onDragLeave={() => setContextDragActive(false)}
                           onDrop={(event) => handleDrop(event, "context")}
                         >
-                          Drag & drop .txt, .md, .cs, .js, .json, .yaml, .java,
-                          and other text/code files
+                          Drag & drop .txt, .md, .json, .yaml, spreadsheets,
+                          and other supporting files
                         </div>
                         {workspace?.contextDocuments.length ? (
                           <ul className="file-list">
@@ -3357,10 +3279,10 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                       {guideOpenByStep.tasks && (
                         <>
                           <p>
-                            <code>tasks.md</code> tells the estimator what to do, in order. You can reference context documents here.
+                            The <strong>Tasks</strong> file tells the estimator what to do, in order. You can reference supporting documents here.
                           </p>
                           <ul className="guide-questions">
-                            <li>What should the agent read first? (e.g. baseline, requirements, context-documents/)</li>
+                            <li>What should the estimator review first? (e.g. baseline, requirements, supporting docs)</li>
                             <li>What analysis or outputs should it produce?</li>
                             <li>What review or summarization steps are needed?</li>
                             <li>How should it refine based on feedback?</li>
@@ -3527,8 +3449,8 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
             <div className="execution-layout">
               <div className="execution-panel">
                 <div className="execution-header">
-                  <h2>Executing Estimation</h2>
-                  <p>Orchestrating agents to complete the defined tasks...</p>
+                  <h2>Running Estimation</h2>
+                  <p>Copilot is processing your tasks to build the estimate...</p>
                 </div>
                 <div className="task-list">
                   {executionTasks.map((task) => (
@@ -3624,7 +3546,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                       }));
                     }}
                     readOnly={false}
-                    placeholder="Start writing Markdown..."
+                    placeholder="Start writing..."
                     modeOverride={
                       agentRefineActive && editorIsMarkdown ? "preview" : null
                     }
@@ -3715,6 +3637,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                       onClick={() => setRightPanelTab("copilot")}
                     >
                       Copilot
+                      {workspace && <span className="tab-workspace-dot" title={`Workspace: ${workspace.name ?? "current"}`} />}
                     </button>
                     <button
                       className={`tab ${
@@ -3723,6 +3646,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                       onClick={() => setRightPanelTab("chat")}
                     >
                       Chat
+                      {workspace && <span className="tab-workspace-dot" title={`Workspace: ${workspace.name ?? "current"}`} />}
                     </button>
                     <button
                       className={`tab ${
@@ -3744,7 +3668,14 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                     <div className="side-section copilot-panel">
                       <div className="copilot-hero">
                         <div>
-                          <h4>Estimate Copilot</h4>
+                          <div className="chat-header">
+                            <h4>Estimate Copilot</h4>
+                            {workspace && (
+                              <span className="workspace-scope-tag" title="Analysis is specific to this workspace">
+                                {workspace.name ?? "Workspace"}
+                              </span>
+                            )}
+                          </div>
                           <p className="muted">{copilotModel.headline}</p>
                         </div>
                         <button className="ghost" onClick={openChatPanel}>
@@ -3754,18 +3685,19 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
 
                       {!workspace ? (
                         <div className="copilot-empty">
-                          <h5>Start with a fast demo</h5>
+                          <h5>Let's get started</h5>
                           <p>
-                            Launch the guided training workspace to see Curator
-                            turn rough context into a finance-ready estimate brief.
+                            Create or select a workspace to see your first
+                            AI-powered cost estimate.
                           </p>
                           <div className="copilot-demo-steps">
-                            <span>1. Open guided workspace</span>
-                            <span>2. Review assumptions and scenarios</span>
-                            <span>3. Apply the estimate brief</span>
+                            <span>1. Create or pick a workspace</span>
+                            <span>2. Enter baseline assumptions</span>
+                            <span>3. Add supporting context</span>
+                            <span>4. Generate estimate brief</span>
                           </div>
                           <div className="copilot-inline-actions">
-                            <button onClick={startTrainingMode}>Launch demo</button>
+                            <button onClick={startTrainingMode}>Start Guide Mode</button>
                             <button className="ghost" onClick={addWorkspace}>
                               New workspace
                             </button>
@@ -3968,144 +3900,196 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                             </button>
                           </div>
 
-                          {pendingEdits.length > 0 ? (
-                            <div className="pending-edits-panel">
-                              <div className="pending-edits-header">
-                                <h5>Review Proposed Changes ({pendingEdits.length})</h5>
+                          {pendingEdits.length > 0 && (
+                            <section className="proposed-updates-panel">
+                              <div className="proposed-updates-header">
+                                <h5>Proposed updates to your files</h5>
+                                <span className="proposed-updates-count">{pendingEdits.length}</span>
                               </div>
-                              <div className="pending-edits-list">
+                              <p className="proposed-updates-desc">
+                                The AI copilot suggests these changes. Review and apply them to update your estimate.
+                              </p>
+                              <div className="proposed-updates-list">
                                 {pendingEdits.map((edit) => {
                                   const diff = summarizeDiff(
                                     edit.originalContent,
                                     edit.newContent
                                   );
+                                  const fileType = edit.kind === "core" ? "Core file" : "Supporting document";
                                   return (
-                                    <div key={edit.id} className="pending-edit-card">
-                                      <div className="pending-edit-info">
-                                        <span className="pending-edit-file">{edit.label}</span>
-                                        <span className="pending-edit-summary">
-                                          +{diff.added} / -{diff.removed}
-                                        </span>
-                                        {diff.highlights.length ? (
-                                          <div className="pending-edit-highlights">
-                                            {diff.highlights.map((line, index) => (
-                                              <code key={`${edit.id}-line-${index}`}>
-                                                {line}
-                                              </code>
-                                            ))}
-                                          </div>
-                                        ) : null}
+                                    <div key={edit.id} className="proposed-update-card">
+                                      <div className="proposed-update-header">
+                                        <span className="proposed-update-file">{edit.label}</span>
+                                        <span className="proposed-update-type">{fileType}</span>
                                       </div>
-                                      <div className="pending-edit-actions">
+                                      <div className="proposed-update-diff">
+                                        <span className="proposed-update-added">+{diff.added}</span>
+                                        <span className="proposed-update-removed">-{diff.removed}</span>
+                                      </div>
+                                      {diff.highlights.length > 0 && (
+                                        <div className="proposed-update-preview">
+                                          {diff.highlights.map((line, index) => (
+                                            <code key={`${edit.id}-preview-${index}`}>{line}</code>
+                                          ))}
+                                        </div>
+                                      )}
+                                      <div className="proposed-update-actions">
                                         <button
-                                          className="pending-edit-btn pending-edit-btn--accept"
+                                          className="proposed-update-btn proposed-update-btn--apply"
                                           onClick={() => acceptEdit(edit)}
-                                          title="Accept changes"
+                                          data-tooltip="Apply this change to your file"
                                         >
-                                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <polyline points="20 6 9 17 4 12" />
-                                          </svg>
+                                          Apply
                                         </button>
                                         <button
-                                          className="pending-edit-btn pending-edit-btn--reject"
+                                          className="proposed-update-btn proposed-update-btn--discard"
                                           onClick={() => rejectEdit(edit)}
-                                          title="Reject changes"
+                                          data-tooltip="Discard this suggestion"
                                         >
-                                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18" />
-                                            <line x1="6" y1="6" x2="18" y2="18" />
-                                          </svg>
+                                          Discard
                                         </button>
                                       </div>
                                     </div>
                                   );
                                 })}
                               </div>
-                            </div>
-                          ) : null}
+                            </section>
+                          )}
                         </>
                       )}
                     </div>
                   ) : rightPanelTab === "chat" ? (
                     <div className="side-section">
-                      <h4>Estimator chat</h4>
-                      <div className="chat-split">
-                        <div className="chat-pane">
-                          <h5>Model output</h5>
-                          <div className="chat-log" ref={chatLogRef}>
-                            {!editorIsMarkdown && !csvPreviewEnabled ? (
-                              <p className="muted">
-                                Chat refinement is available for Markdown or
-                                CSV files.
-                              </p>
-                            ) : chatMessages.length ? (
-                              chatMessages.map((message, index) => (
-                                <div
-                                  key={`${message.role}-${index}`}
-                                  className={`chat-bubble chat-${message.role}`}
-                                >
-                                  {message.text}
-                                </div>
-                              ))
-                            ) : (
-                              <p className="muted">
-                                Start a conversation to refine the estimate.
-                              </p>
-                            )}
-                            {chatLoading && (
-                              <div className="chat-bubble chat-agent chat-loading">
-                                <span className="chat-typing-indicator">
-                                  <span></span>
-                                  <span></span>
-                                  <span></span>
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="chat-pane">
-                          <h5>Reasoning output</h5>
-                          <div className="chat-log chat-log--reasoning">
-                            <p className="muted">
-                              Reasoning stream will appear here when enabled.
-                            </p>
-                          </div>
-                        </div>
+                      <div className="chat-header">
+                        <h4>Chat</h4>
+                        {workspace && (
+                          <span className="workspace-scope-tag" title="Chat history is specific to this workspace">
+                            {workspace.name ?? "Workspace"}
+                          </span>
+                        )}
                       </div>
+                      {!workspace ? (
+                        <div className="copilot-empty">
+                          <h5>Select a workspace</h5>
+                          <p>
+                            Open or create a workspace to start chatting with
+                            the AI assistant about your estimate.
+                          </p>
+                          <div className="copilot-inline-actions">
+                            <button onClick={addWorkspace}>New workspace</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="chat-split">
+                            <div className="chat-pane">
+                              <h5>Model output</h5>
+                              <div className="chat-log" ref={chatLogRef}>
+                                {!editorIsMarkdown && !csvPreviewEnabled ? (
+                                  <p className="muted">
+                                    Chat refinement is available for estimate
+                                    files.
+                                  </p>
+                                ) : chatMessages.length ? (
+                                  chatMessages.map((message, index) => (
+                                    <div
+                                      key={`${message.role}-${index}`}
+                                      className={`chat-bubble chat-${message.role}`}
+                                    >
+                                      {message.text}
+                                    </div>
+                                  ))
+                                ) : (
+                                  <p className="muted">
+                                    Ask questions or request changes to your estimate.
+                                  </p>
+                                )}
+                                {chatLoading && (
+                                  <div className="chat-bubble chat-agent chat-loading">
+                                    <span className="chat-typing-indicator">
+                                      <span></span>
+                                      <span></span>
+                                      <span></span>
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            <div className="chat-pane">
+                              <h5>Reasoning output</h5>
+                              <div className="chat-log chat-log--reasoning">
+                                <p className="muted">
+                                  Reasoning stream will appear here when enabled.
+                                </p>
+                              </div>
+                            </div>
+                          </div>
                       {pendingEdits.length > 0 && (
                         <div className="pending-edits-panel">
                           <div className="pending-edits-header">
-                            <h5>Pending Changes ({pendingEdits.length})</h5>
+                            <h5>Proposed updates to your files ({pendingEdits.length})</h5>
+                            <p className="muted">
+                              These changes were suggested by the estimator for this workspace. Review and apply when you are ready.
+                            </p>
                           </div>
                           <div className="pending-edits-list">
-                            {pendingEdits.map((edit) => (
-                              <div key={edit.id} className="pending-edit-card">
-                                <div className="pending-edit-info">
-                                  <span className="pending-edit-file">{edit.label}</span>
+                            {pendingEdits.map((edit) => {
+                              const diff = summarizeDiff(
+                                edit.originalContent,
+                                edit.newContent
+                              );
+                              const typeLabel =
+                                edit.kind === "core"
+                                  ? "Core file"
+                                  : edit.kind === "newSupplemental"
+                                  ? "New supporting file"
+                                  : edit.fileId.includes("context")
+                                  ? "Context document"
+                                  : "Supporting file";
+                              return (
+                                <div key={edit.id} className="pending-edit-card">
+                                  <div className="pending-edit-info">
+                                    <span className="pending-edit-file">
+                                      {edit.label}
+                                      <span className="pending-edit-type"> · {typeLabel}</span>
+                                    </span>
+                                    <span className="pending-edit-summary">
+                                      +{diff.added} / -{diff.removed}
+                                    </span>
+                                    {diff.highlights.length ? (
+                                      <div className="pending-edit-highlights">
+                                        {diff.highlights.map((line, index) => (
+                                          <code key={`${edit.id}-line-${index}`}>
+                                            {line}
+                                          </code>
+                                        ))}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                  <div className="pending-edit-actions">
+                                    <button
+                                      className="pending-edit-btn pending-edit-btn--accept"
+                                      onClick={() => acceptEdit(edit)}
+                                      title="Apply this update to the workspace"
+                                    >
+                                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <polyline points="20 6 9 17 4 12" />
+                                      </svg>
+                                    </button>
+                                    <button
+                                      className="pending-edit-btn pending-edit-btn--reject"
+                                      onClick={() => rejectEdit(edit)}
+                                      title="Discard this update"
+                                    >
+                                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18" />
+                                        <line x1="6" y1="6" x2="18" y2="18" />
+                                      </svg>
+                                    </button>
+                                  </div>
                                 </div>
-                                <div className="pending-edit-actions">
-                                  <button
-                                    className="pending-edit-btn pending-edit-btn--accept"
-                                    onClick={() => acceptEdit(edit)}
-                                    title="Accept changes"
-                                  >
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                      <polyline points="20 6 9 17 4 12" />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    className="pending-edit-btn pending-edit-btn--reject"
-                                    onClick={() => rejectEdit(edit)}
-                                    title="Reject changes"
-                                  >
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                      <line x1="18" y1="6" x2="6" y2="18" />
-                                      <line x1="6" y1="6" x2="18" y2="18" />
-                                    </svg>
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       )}
@@ -4237,6 +4221,8 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                           </div>
                         </div>
                       </div>
+                        </>
+                      )}
                     </div>
                   ) : (
                     <div className="side-section">

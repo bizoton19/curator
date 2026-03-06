@@ -2,6 +2,7 @@ export type PermissionRequest = {
   resource: string;
   action: string;
   rationale: string;
+  workspacePath?: string;
 };
 
 export class PermissionGate {

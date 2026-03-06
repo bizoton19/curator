@@ -80,6 +80,28 @@ export class DatabaseManager {
     const result = stmt.get() as { value: string } | undefined;
     return result ? result.value : null;
   }
+
+  grantPermission(workspacePath: string, action: string) {
+    const db = this.getDb(workspacePath);
+    const key = `permission:${action}`;
+    const stmt = db.prepare("INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)");
+    return stmt.run(key, "granted");
+  }
+
+  hasPermission(workspacePath: string, action: string): boolean {
+    const db = this.getDb(workspacePath);
+    const key = `permission:${action}`;
+    const stmt = db.prepare("SELECT value FROM kv_store WHERE key = ?");
+    const result = stmt.get(key) as { value: string } | undefined;
+    return result?.value === "granted";
+  }
+
+  revokePermission(workspacePath: string, action: string) {
+    const db = this.getDb(workspacePath);
+    const key = `permission:${action}`;
+    const stmt = db.prepare("DELETE FROM kv_store WHERE key = ?");
+    return stmt.run(key);
+  }
   
   close(workspacePath: string) {
       if (this.dbs.has(workspacePath)) {

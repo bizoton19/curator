@@ -785,16 +785,21 @@ ipcMain.handle(
 );
 
 ipcMain.handle("permissions:request", async (_event, request) => {
-  const message = "Workspace Permission Request";
-  const detail = `${request?.rationale ?? "Permission required."}\n\nAllow ${
-    request?.action ?? "access"
-  } for ${request?.resource ?? "workspace"}?`;
+  const workspacePath = request?.workspacePath;
+  const action = request?.action ?? "access";
+
+  if (workspacePath && dbManager.hasPermission(workspacePath, action)) {
+    return true;
+  }
+
+  const message = "Curator needs permission";
+  const detail = request?.rationale ?? "Permission required to proceed.";
   const win = BrowserWindow.getFocusedWindow();
   const options: MessageBoxOptions = {
     type: "question",
-    buttons: ["Allow", "Deny"],
-    defaultId: 0,
-    cancelId: 1,
+    buttons: ["Allow once", "Always allow", "Deny"],
+    defaultId: 1,
+    cancelId: 2,
     title: "Curator",
     message,
     detail
@@ -802,7 +807,16 @@ ipcMain.handle("permissions:request", async (_event, request) => {
   const { response } = win
     ? await dialog.showMessageBox(win, options)
     : await dialog.showMessageBox(options);
-  return response === 0;
+
+  if (response === 2) {
+    return false;
+  }
+
+  if (response === 1 && workspacePath) {
+    dbManager.grantPermission(workspacePath, action);
+  }
+
+  return true;
 });
 
 ipcMain.handle("config:get", async () => {

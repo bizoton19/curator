@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld("curator", {
     resource: string;
     action: string;
     rationale: string;
+    workspacePath?: string;
   }) => ipcRenderer.invoke("permissions:request", request),
   createTrainingWorkspace: (payload: {
     baseline: string;

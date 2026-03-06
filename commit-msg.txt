@@ -1,0 +1,9 @@
+Implement Guide Mode & Sidebar UX improvements
+
+- Replace Training Mode with Guide Mode (TurboTax-style onboarding)
+- Rework pending changes panel to Proposed updates with file type labels and diff summaries
+- Add workspace scoping tags to Copilot and Chat panels
+- Ensure permissions are remembered per workspace via SQLite kv_store
+- Polish all user-facing copy to be finance-native (no markdown terminology)
+- Update sidebar tree labels: Core files, Supporting documents
+- Streamline Guide Mode to work with any workspace instead of creating dedicated training workspace

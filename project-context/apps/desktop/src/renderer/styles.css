@@ -462,116 +462,185 @@ main {
 .file-tree {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
+  padding: 4px 0;
 }
 
-.tree-item {
+.tree-section {
   display: flex;
   flex-direction: column;
+}
+
+.tree-section-header-row {
+  display: flex;
+  align-items: center;
   gap: 4px;
 }
 
-.tree-row-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.tree-row {
+.tree-section-header {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px 8px 36px;
-  border-radius: 6px;
+  gap: 6px;
+  padding: 6px 8px;
   background: transparent;
-  border: 1px solid transparent;
+  border: none;
   color: var(--text);
-  font-size: 13px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   cursor: pointer;
   text-align: left;
 }
 
-.tree-row:hover {
-  background: #e8e8e8;
+.tree-section-header:hover {
+  background: rgba(0, 0, 0, 0.04);
 }
 
-.tree-row.active {
-  background: #dfe3e8;
+.tree-section-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-soft);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.tree-section:hover .tree-section-action {
+  opacity: 1;
+}
+
+.tree-section-action:hover {
+  background: rgba(0, 0, 0, 0.06);
   color: var(--text);
-  border-left: 2px solid #007acc;
-  padding-left: 30px;
 }
 
-.tree-folder {
-  font-weight: 500;
-  padding-left: 12px;
+.tree-section-action svg {
+  width: 14px;
+  height: 14px;
 }
 
-.tree-file {
-  font-weight: 400;
-}
-
-.tree-caret {
-  font-size: 10px;
-  color: #6e6e6e;
+.tree-chevron {
   width: 12px;
-  text-align: center;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--text-soft);
 }
 
-.tree-label {
-  flex: 1;
-  text-align: left;
-  font-size: 13px;
+.tree-section-children {
+  display: flex;
+  flex-direction: column;
+  padding-left: 8px;
+}
+
+.tree-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 5px 16px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
   color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+}
+
+.tree-file-row::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 60%;
+  background: var(--panel-border);
+  opacity: 0.5;
+}
+
+.tree-file-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.tree-file-row--selected {
+  background: rgba(0, 122, 204, 0.12);
+  color: var(--accent);
+}
+
+.tree-file-row--selected::before {
+  background: var(--accent);
+  opacity: 1;
+  width: 2px;
+  left: 3px;
+}
+
+.tree-file-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-soft);
+}
+
+.tree-file-row--selected .tree-file-icon {
+  color: var(--accent);
+}
+
+.tree-file-name {
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tree-badges {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
+.tree-badge {
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-weight: 500;
 }
 
-.tree-children {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  padding-left: 0;
+.tree-badge--missing {
+  background: #ffebee;
+  color: #c62828;
 }
 
-.tree-empty {
-  font-size: 12px;
-  color: var(--text-soft);
-  padding: 8px 12px;
-  line-height: 1.4;
+.tree-badge--unsaved {
+  background: #fff8e1;
+  color: #f57c00;
 }
 
-.tree-dropzone {
-  padding: 10px 12px;
-  border-radius: 8px;
+.tree-drop-area {
+  margin: 4px 8px 4px 16px;
+  padding: 8px 10px;
+  border-radius: 6px;
   border: 1px dashed var(--sand-border);
-  background: #fbfbfc;
+  background: #fafafa;
   font-size: 11px;
   color: var(--text-muted);
-  line-height: 1.4;
+  text-align: center;
 }
 
-.tree-action {
-  border: 1px solid var(--panel-border);
-  background: #ffffff;
-  color: var(--text);
-  font-size: 11px;
-  padding: 6px 8px;
-  border-radius: 999px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.tree-action:hover {
+.tree-drop-area--active {
+  border-color: var(--accent);
   background: var(--accent-wash);
+  color: var(--accent);
+}
+
+.tree-empty-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 8px 6px 22px;
+  font-style: italic;
 }
 
 .muted {
@@ -664,6 +733,44 @@ main {
 .tab--active .badge--dirty {
   background: #ffe3b0;
   color: #6f3b0c;
+}
+
+.tab-workspace-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-left: 4px;
+  opacity: 0.6;
+}
+
+.tab--active .tab-workspace-dot {
+  opacity: 1;
+}
+
+.workspace-scope-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--accent-wash);
+  color: var(--accent);
+  margin-left: 8px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.chat-header h4 {
+  margin: 0;
 }
 
 label {
@@ -2460,7 +2567,7 @@ textarea {
   border-bottom: 1px solid var(--panel-border);
   display: flex;
   flex-direction: column;
-  max-height: 200px;
+  max-height: 220px;
   overflow-y: auto;
 }
 
@@ -2468,14 +2575,16 @@ textarea {
   padding: 8px 12px;
   background: #f1f3f5;
   border-bottom: 1px solid var(--panel-border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .pending-edits-header h5 {
   margin: 0;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .pending-edits-list {
@@ -2491,7 +2600,7 @@ textarea {
   border-radius: 6px;
   padding: 8px 12px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
@@ -2499,6 +2608,9 @@ textarea {
 .pending-edit-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .pending-edit-file {
@@ -2511,9 +2623,15 @@ textarea {
   text-overflow: ellipsis;
 }
 
+.pending-edit-type {
+  font-weight: 400;
+  color: var(--text-soft);
+  margin-left: 4px;
+}
+
 .pending-edit-summary {
   display: inline-block;
-  margin-top: 4px;
+  margin-top: 2px;
   font-size: 11px;
   color: var(--text-soft);
 }
@@ -2522,7 +2640,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-top: 8px;
+  margin-top: 4px;
 }
 
 .pending-edit-highlights code {
