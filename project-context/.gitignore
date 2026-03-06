@@ -1,0 +1,7 @@
+node_modules
+/dist
+/apps/desktop/dist
+/apps/desktop/.vite
+services/docx-renderer/bin
+services/docx-renderer/obj
+.DS_Store
