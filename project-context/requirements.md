@@ -19,12 +19,12 @@
 - **Refinement:** Elevate `Execute` into a finance-facing estimation action with visible drivers, scenarios, and review outputs
 - **Refinement:** Visual task progress during execution phase
 - **Refinement:** Dockable/split-view for examples to allow reference while editing
-- **Implemented:** WYSIWYG editing mode so users author without raw markdown syntax while markdown remains canonical for AI processing
-- **Implemented:** Resizable panels between editor and side panel
-- **Implemented:** Collapsible left sidebar for maximum editing real estate
-- **Implemented:** Context file upload via chat into `context-documents/`
-- **Implemented:** Interactive training module with a pre-filled example workspace
-- **Implemented:** Rich tooltips on action buttons
+- **Planned:** WYSIWYG editing mode so users author without raw markdown syntax while markdown remains canonical for AI processing
+- **Planned:** Resizable panels between editor and side panel
+- **Planned:** Collapsible left sidebar for maximum editing real estate
+- **Planned:** Context file upload via chat into `context-documents/`
+- **Planned:** Interactive training module with a pre-filled example workspace
+- **Planned:** Rich tooltips on action buttons
 - **Spec:** Left sidebar Workspaces/Steps tabs, explorer toolbar, earlier context capture, and prompt-based wizard guidance are defined in `docs/workspace-sidebar-and-wizard-ux.md`
 
 ## Technical
@@ -36,6 +36,14 @@
 - Chat-driven file edits use structured `curator_edits` payloads and pending review actions
 - Per-workspace persistence stores chat history, snapshots, and last-opened context
 - Estimate Copilot derives structured estimation signals from workspace content and surfaces them as scenario-ready summaries
+- Full-text search must cover all text-based files, including converted Office docs (`.docx`, `.pdf`, `.pptx`, `.xlsx`) via Markdown sidecars; search hits should open the converted Markdown view for binary sources
+- File handling rules:
+  - `.xlsx` is converted to tab-delimited text for table preview + chat context
+  - `.docx` is converted to Markdown for preview + chat context
+  - `.pdf` is converted to Markdown when text-based; scanned PDFs show a “Preview unavailable” notice and are not searchable without OCR
+  - `.pptx` is converted to Markdown with slide sections
+  - Images are not converted or searchable (future vision support)
+- In-app help knowledge base: the chat window must be able to answer “how to” questions about the app UI and explain product terms (baseline, requirements, tasks, context documents) using a built-in knowledge base, without requiring external docs
 
 ## Product UX Vision
 

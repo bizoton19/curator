@@ -17,8 +17,15 @@ import {
   stat,
   writeFile
 } from "fs/promises";
+import { SearchIndex } from "./search/SearchIndex.js";
 
 import { DatabaseManager } from "./db.js";
+
+/** Lazy-load conversion to avoid pulling pdf-parse/pdfjs-dist at main process startup (they need DOM/canvas). */
+const convertToMarkdownLazy = async (filePath: string): Promise<string> => {
+  const { convertToMarkdown } = await import("./convertToMarkdown.js");
+  return convertToMarkdown(filePath);
+};
 
 const isDev = process.env.NODE_ENV !== "production";
 const WORKSPACE_FILES = ["baseline", "requirements", "tasks"] as const;
@@ -27,6 +34,7 @@ type WorkspaceFileId = (typeof WORKSPACE_FILES)[number];
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const CONTEXT_DIR = "context-documents";
+const CONVERTED_DIR = ".curator-converted";
 const TEMPLATE_DIR = "templates";
 const WORKSPACES_FOLDER = "workspaces";
 const CONTEXT_EXTENSIONS = new Set([
@@ -67,8 +75,19 @@ const CONTEXT_EXTENSIONS = new Set([
   ".hpp",
   ".cs",
   ".ps1",
-  ".sh"
+  ".sh",
+  ".docx",
+  ".pdf",
+  ".pptx",
+  ".xlsx"
 ]);
+const CONTEXT_EXTENSIONS_NEED_CONVERSION = new Set([
+  ".docx",
+  ".pdf",
+  ".pptx",
+  ".xlsx"
+]);
+const MAX_CONTEXT_DOCUMENTS = 10;
 const TEMPLATE_EXTENSIONS = new Set([".docx", ".dot"]);
 const DEFAULT_WORKSPACE_ID = "default";
 const DEFAULT_WORKSPACE_NAME = "Default Workspace";
@@ -80,6 +99,7 @@ type WorkspaceRegistry = { workspaces: WorkspaceEntry[]; activeId: string | null
 let workspaceRootPath = "";
 let registryPath = "";
 let configPath = "";
+let searchIndex: SearchIndex | null = null;
 
 type StoredConfig = {
   provider?: string;
@@ -130,6 +150,18 @@ const listFolder = async (dir: string, allowed?: Set<string>) => {
   }
 };
 
+const getSidecarPath = (originalPath: string) => {
+  const dir = dirname(originalPath);
+  const base = basename(originalPath);
+  return join(dir, CONVERTED_DIR, `${base}.md`);
+};
+
+const formatConversionFailure = (path: string, error: unknown) => {
+  const reason = error instanceof Error ? error.message : "Unknown error";
+  console.error(`Failed to convert context document: ${path}`, error);
+  return `Conversion failed for ${basename(path)}.\n\n${reason}`;
+};
+
 const importContextFileInternal = async (root: string, sourcePath: string) => {
   const ext = extname(sourcePath).toLowerCase();
   if (!CONTEXT_EXTENSIONS.has(ext)) {
@@ -139,6 +171,39 @@ const importContextFileInternal = async (root: string, sourcePath: string) => {
   await ensureDir(targetDir);
   const targetPath = await findAvailablePath(targetDir, basename(sourcePath));
   await copyFile(sourcePath, targetPath);
+  if (CONTEXT_EXTENSIONS_NEED_CONVERSION.has(ext)) {
+    const convertedDir = join(targetDir, CONVERTED_DIR);
+    await ensureDir(convertedDir);
+    // Convert in the background so multi-file uploads return quickly.
+    void (async () => {
+      try {
+        const markdown = await convertToMarkdownLazy(targetPath);
+        const sidecarPath = getSidecarPath(targetPath);
+        await writeFile(sidecarPath, markdown, "utf-8");
+      } catch (error) {
+        const sidecarPath = getSidecarPath(targetPath);
+        await writeFile(
+          sidecarPath,
+          formatConversionFailure(targetPath, error),
+          "utf-8"
+        );
+      } finally {
+        if (searchIndex) {
+          try {
+            await searchIndex.indexFile(targetPath, CONTEXT_EXTENSIONS);
+          } catch (error) {
+            console.error("Search indexing failed:", error);
+          }
+        }
+      }
+    })();
+  } else if (searchIndex) {
+    try {
+      await searchIndex.indexFile(targetPath, CONTEXT_EXTENSIONS);
+    } catch (error) {
+      console.error("Search indexing failed:", error);
+    }
+  }
   return { name: basename(targetPath), path: targetPath, ext };
 };
 
@@ -198,6 +263,13 @@ const createTextFileInternal = async (
   const filename = safeName.endsWith(ext) ? safeName : `${safeName}${ext}`;
   const targetPath = await findAvailablePath(root, filename);
   await writeFile(targetPath, contents, "utf-8");
+  if (searchIndex) {
+    try {
+      await searchIndex.indexFile(targetPath, CONTEXT_EXTENSIONS);
+    } catch (error) {
+      console.error("Search indexing failed:", error);
+    }
+  }
   return { name: basename(targetPath), path: targetPath, ext };
 };
 
@@ -341,6 +413,12 @@ const openWorkspaceInternal = async (root: string) => {
   const registry = await loadRegistry();
   const entry = registry.workspaces.find((workspace) => workspace.path === root);
 
+  if (searchIndex) {
+    searchIndex.indexWorkspace(root, CONTEXT_EXTENSIONS).catch((error: unknown) => {
+      console.error("Search indexing failed:", error);
+    });
+  }
+
   return {
     root,
     id: entry?.id ?? null,
@@ -390,6 +468,7 @@ app.whenReady().then(() => {
   // Let's keep registry in userData but workspaces in home.
   registryPath = join(app.getPath("userData"), "registry.json");
   configPath = join(app.getPath("userData"), "config.json");
+  searchIndex = new SearchIndex(join(app.getPath("userData"), "search-index.db"));
   ensureDefaultWorkspace().catch(() => {});
   createWindow();
 
@@ -437,6 +516,32 @@ ipcMain.handle("fs:setActiveWorkspace", async (_event, payload: { id?: string })
   registry.activeId = payload.id;
   await saveRegistry(registry);
 });
+
+ipcMain.handle(
+  "search:files",
+  async (_event, payload: { root?: string; query?: string; limit?: number }) => {
+    if (!payload?.root || !payload?.query) return [];
+    if (!searchIndex) return [];
+    return searchIndex.searchFiles(
+      payload.root,
+      payload.query,
+      payload.limit ?? 50
+    );
+  }
+);
+
+ipcMain.handle(
+  "search:context",
+  async (_event, payload: { root?: string; query?: string; limit?: number }) => {
+    if (!payload?.root || !payload?.query) return [];
+    if (!searchIndex) return [];
+    return searchIndex.searchContext(
+      payload.root,
+      payload.query,
+      payload.limit ?? 12
+    );
+  }
+);
 
 ipcMain.handle("fs:createWorkspace", async (_event, payload: { name: string }) => {
   if (!payload?.name) throw new Error("Workspace name is required");
@@ -573,6 +678,13 @@ ipcMain.handle(
     const path = join(payload.root, `${payload.id}.md`);
     const contents = payload.contents ?? "";
     await writeFile(path, contents, "utf-8");
+    if (searchIndex) {
+      try {
+        await searchIndex.indexFile(path, CONTEXT_EXTENSIONS);
+      } catch (error) {
+        console.error("Search indexing failed:", error);
+      }
+    }
     return { id: payload.id, path, contents };
   }
 );
@@ -590,7 +702,120 @@ ipcMain.handle(
     if (!CONTEXT_EXTENSIONS.has(ext)) {
       throw new Error(`Unsupported file type: ${ext || "unknown"}`);
     }
+    if (
+      isPathInsideRoot(join(payload.root, CONTEXT_DIR), payload.path) &&
+      CONTEXT_EXTENSIONS_NEED_CONVERSION.has(ext)
+    ) {
+      const sidecarPath = getSidecarPath(payload.path);
+      try {
+        const contents = await readFile(sidecarPath, "utf-8");
+        return { path: payload.path, contents, ext };
+      } catch {
+        try {
+          const markdown = await convertToMarkdownLazy(payload.path);
+          await ensureDir(dirname(sidecarPath));
+          await writeFile(sidecarPath, markdown, "utf-8");
+          if (searchIndex) {
+            try {
+              await searchIndex.indexFile(payload.path, CONTEXT_EXTENSIONS);
+            } catch (error) {
+              console.error("Search indexing failed:", error);
+            }
+          }
+          return { path: payload.path, contents: markdown, ext };
+        } catch (error) {
+          const contents = formatConversionFailure(payload.path, error);
+          await ensureDir(dirname(sidecarPath));
+          await writeFile(sidecarPath, contents, "utf-8");
+          if (searchIndex) {
+            try {
+              await searchIndex.indexFile(payload.path, CONTEXT_EXTENSIONS);
+            } catch (err) {
+              console.error("Search indexing failed:", err);
+            }
+          }
+          return {
+            path: payload.path,
+            contents,
+            ext
+          };
+        }
+      }
+    }
     const contents = await readFile(payload.path, "utf-8");
+    if (searchIndex) {
+      try {
+        await searchIndex.indexFile(payload.path, CONTEXT_EXTENSIONS);
+      } catch (error) {
+        console.error("Search indexing failed:", error);
+      }
+    }
+    return { path: payload.path, contents, ext };
+  }
+);
+
+ipcMain.handle(
+  "fs:getContextDocumentContent",
+  async (_event, payload: { root?: string; path?: string }) => {
+    if (!payload?.root || !payload?.path) {
+      throw new Error("Invalid getContextDocumentContent payload");
+    }
+    if (!isPathInsideRoot(payload.root, payload.path)) {
+      throw new Error("File access outside workspace root is not allowed");
+    }
+    const contextDirAbs = join(payload.root, CONTEXT_DIR);
+    if (!isPathInsideRoot(contextDirAbs, payload.path)) {
+      throw new Error("Path is not a context document");
+    }
+    const ext = extname(payload.path).toLowerCase();
+    if (!CONTEXT_EXTENSIONS.has(ext)) {
+      throw new Error(`Unsupported file type: ${ext || "unknown"}`);
+    }
+    if (CONTEXT_EXTENSIONS_NEED_CONVERSION.has(ext)) {
+      const sidecarPath = getSidecarPath(payload.path);
+      try {
+        const contents = await readFile(sidecarPath, "utf-8");
+        return { path: payload.path, contents, ext };
+      } catch {
+        try {
+          const markdown = await convertToMarkdownLazy(payload.path);
+          await ensureDir(dirname(sidecarPath));
+          await writeFile(sidecarPath, markdown, "utf-8");
+          if (searchIndex) {
+            try {
+              await searchIndex.indexFile(payload.path, CONTEXT_EXTENSIONS);
+            } catch (error) {
+              console.error("Search indexing failed:", error);
+            }
+          }
+          return { path: payload.path, contents: markdown, ext };
+        } catch (error) {
+          const contents = formatConversionFailure(payload.path, error);
+          await ensureDir(dirname(sidecarPath));
+          await writeFile(sidecarPath, contents, "utf-8");
+          if (searchIndex) {
+            try {
+              await searchIndex.indexFile(payload.path, CONTEXT_EXTENSIONS);
+            } catch (err) {
+              console.error("Search indexing failed:", err);
+            }
+          }
+          return {
+            path: payload.path,
+            contents,
+            ext
+          };
+        }
+      }
+    }
+    const contents = await readFile(payload.path, "utf-8");
+    if (searchIndex) {
+      try {
+        await searchIndex.indexFile(payload.path, CONTEXT_EXTENSIONS);
+      } catch (error) {
+        console.error("Search indexing failed:", error);
+      }
+    }
     return { path: payload.path, contents, ext };
   }
 );
@@ -612,7 +837,22 @@ ipcMain.handle(
       throw new Error(`Unsupported file type: ${ext || "unknown"}`);
     }
     const contents = payload.contents ?? "";
-    await writeFile(payload.path, contents, "utf-8");
+    const contextDirAbs = join(payload.root, CONTEXT_DIR);
+    const isConvertedContextDoc =
+      isPathInsideRoot(contextDirAbs, payload.path) &&
+      CONTEXT_EXTENSIONS_NEED_CONVERSION.has(ext);
+    const writePath = isConvertedContextDoc
+      ? getSidecarPath(payload.path)
+      : payload.path;
+    await ensureDir(dirname(writePath));
+    await writeFile(writePath, contents, "utf-8");
+    if (searchIndex) {
+      try {
+        await searchIndex.indexFile(payload.path, CONTEXT_EXTENSIONS);
+      } catch (error) {
+        console.error("Search indexing failed:", error);
+      }
+    }
     return { path: payload.path, contents, ext };
   }
 );
@@ -626,6 +866,15 @@ ipcMain.handle(
     if (!payload?.root || !payload?.name) {
       throw new Error("Invalid context document payload");
     }
+    const existing = await listFolder(
+      join(payload.root, CONTEXT_DIR),
+      CONTEXT_EXTENSIONS
+    );
+    if (existing.length >= MAX_CONTEXT_DOCUMENTS) {
+      throw new Error(
+        `Maximum ${MAX_CONTEXT_DOCUMENTS} supporting documents. Remove one to add another.`
+      );
+    }
     const targetDir = join(payload.root, CONTEXT_DIR);
     await ensureDir(targetDir);
     const safeName = sanitizeFilename(payload.name) || "context-notes";
@@ -637,6 +886,13 @@ ipcMain.handle(
     const targetPath = await findAvailablePath(targetDir, filename);
     const contents = payload.contents ?? "";
     await writeFile(targetPath, contents, "utf-8");
+    if (searchIndex) {
+      try {
+        await searchIndex.indexFile(targetPath, CONTEXT_EXTENSIONS);
+      } catch (error) {
+        console.error("Search indexing failed:", error);
+      }
+    }
     return { name: basename(targetPath), path: targetPath, ext };
   }
 );
@@ -647,6 +903,15 @@ ipcMain.handle(
     if (!payload?.root || !payload?.sourcePath) {
       throw new Error("Invalid context import payload");
     }
+    const existing = await listFolder(
+      join(payload.root, CONTEXT_DIR),
+      CONTEXT_EXTENSIONS
+    );
+    if (existing.length >= MAX_CONTEXT_DOCUMENTS) {
+      throw new Error(
+        `Maximum ${MAX_CONTEXT_DOCUMENTS} supporting documents. Remove one to add another.`
+      );
+    }
     return importContextFileInternal(payload.root, payload.sourcePath);
   }
 );
@@ -656,6 +921,14 @@ ipcMain.handle(
   async (_event, payload: { root?: string }) => {
     if (!payload?.root) {
       throw new Error("Invalid context import payload");
+    }
+    const existing = await listFolder(
+      join(payload.root, CONTEXT_DIR),
+      CONTEXT_EXTENSIONS
+    );
+    const remaining = Math.max(0, MAX_CONTEXT_DOCUMENTS - existing.length);
+    if (remaining === 0) {
+      return [];
     }
     const result = await dialog.showOpenDialog({
       properties: ["openFile", "multiSelections"],
@@ -670,10 +943,12 @@ ipcMain.handle(
     });
     if (result.canceled || result.filePaths.length === 0) return [];
     const imported: { name: string; path: string; ext: string }[] = [];
-    for (const sourcePath of result.filePaths) {
+    const toImport = result.filePaths.slice(0, remaining);
+    for (const sourcePath of toImport) {
       try {
         const saved = await importContextFileInternal(payload.root, sourcePath);
         imported.push(saved);
+        if (imported.length >= remaining) break;
       } catch (error) {
         continue;
       }

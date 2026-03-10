@@ -26,3 +26,6 @@ DOCX renderer:
 ## Notes
 - The DOCX renderer is a stub with placeholder routes. Wire in Open XML SDK or OfficeIMO for real rendering.
 - The Desktop app includes core module boundaries for Markdown, orchestration, permissions, and capabilities.
+
+## Packaging & Install
+See `docs/packaging-and-installation.md` for packaging steps, installer guidance, and configuration behavior.

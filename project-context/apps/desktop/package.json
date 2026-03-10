@@ -10,7 +10,10 @@
     "dev:main": "tsc -p tsconfig.main.json --watch",
     "dev:electron": "wait-on tcp:5175 dist/main/index.js && electron .",
     "build": "tsc -p tsconfig.main.json && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dist": "npm run build && electron-builder --config electron-builder.config.cjs --publish=never",
+    "dist:mac": "npm run build && electron-builder --config electron-builder.config.cjs --mac --publish=never",
+    "dist:win": "npm run build && electron-builder --config electron-builder.config.cjs --win --publish=never"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.2.4",
@@ -28,7 +31,11 @@
     "codemirror": "^6.0.1",
     "diff": "^8.0.3",
     "electron": "^29.4.0",
+    "mammoth": "^1.11.0",
     "marked": "^12.0.2",
+    "officeparser": "^6.0.4",
+    "pdf-parse": "^2.4.5",
+    "pdf.js-extract": "^0.2.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "turndown": "^7.2.0",
@@ -43,6 +50,7 @@
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.27",
     "concurrently": "^8.2.2",
+    "electron-builder": "^24.13.3",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.2.1",
     "typescript": "^5.4.5",

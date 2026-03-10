@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld("curator", {
   }) => ipcRenderer.invoke("fs:createContextDocument", payload),
   readTextFile: (payload: { root: string; path: string }) =>
     ipcRenderer.invoke("fs:readTextFile", payload),
+  getContextDocumentContent: (payload: { root: string; path: string }) =>
+    ipcRenderer.invoke("fs:getContextDocumentContent", payload),
   saveTextFile: (payload: { root: string; path: string; contents: string }) =>
     ipcRenderer.invoke("fs:saveTextFile", payload),
   selectContextFiles: (payload: { root: string }) =>
@@ -72,5 +74,9 @@ contextBridge.exposeInMainWorld("curator", {
   dbSetLastOpened: (payload: { workspacePath: string; fileId: string }) =>
     ipcRenderer.invoke("db:setLastOpened", payload),
   dbGetLastOpened: (payload: { workspacePath: string }) =>
-    ipcRenderer.invoke("db:getLastOpened", payload)
+    ipcRenderer.invoke("db:getLastOpened", payload),
+  searchFiles: (payload: { root: string; query: string; limit?: number }) =>
+    ipcRenderer.invoke("search:files", payload),
+  searchContext: (payload: { root: string; query: string; limit?: number }) =>
+    ipcRenderer.invoke("search:context", payload)
 });

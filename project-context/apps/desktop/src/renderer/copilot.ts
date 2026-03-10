@@ -7,6 +7,7 @@ export type EstimateDriver = {
   label: string;
   score: number;
   impact: "high" | "medium" | "low";
+  category: string;
   description: string;
   sources: string[];
   rangeImpact: string;
@@ -44,6 +45,7 @@ export type EstimateCopilotModel = {
   assumptions: string[];
   unknowns: string[];
   drivers: EstimateDriver[];
+  savings: EstimateDriver[];
   scenarios: Record<EstimateScenarioId, EstimateScenario>;
   nextQuestions: EstimateQuestion[];
   traceability: TraceabilityItem[];
@@ -59,6 +61,7 @@ const DRIVER_RULES = [
   {
     id: "labor",
     label: "Labor shape",
+    category: "Labor",
     patterns: [
       "team",
       "engineer",
@@ -76,6 +79,7 @@ const DRIVER_RULES = [
   {
     id: "integration",
     label: "Integration surface",
+    category: "Delivery",
     patterns: [
       "integration",
       "api",
@@ -92,6 +96,7 @@ const DRIVER_RULES = [
   {
     id: "data",
     label: "Data and reporting",
+    category: "Data volume",
     patterns: [
       "data",
       "etl",
@@ -109,6 +114,7 @@ const DRIVER_RULES = [
   {
     id: "ai",
     label: "AI and model complexity",
+    category: "Engineering",
     patterns: [
       "ai",
       "ml",
@@ -126,6 +132,7 @@ const DRIVER_RULES = [
   {
     id: "compliance",
     label: "Compliance and control",
+    category: "Governance",
     patterns: [
       "privacy",
       "security",
@@ -143,6 +150,7 @@ const DRIVER_RULES = [
   {
     id: "operations",
     label: "Support and operations",
+    category: "Operations",
     patterns: [
       "support",
       "maintenance",
@@ -155,6 +163,57 @@ const DRIVER_RULES = [
     ],
     description: "Operational readiness often separates a draft estimate from a finance-ready estimate.",
     rangeImpact: "Support expectations create recurring cost and increase total cost of ownership."
+  }
+] as const;
+
+const SAVINGS_RULES = [
+  {
+    id: "reuse",
+    label: "Reuse existing assets",
+    category: "Labor",
+    patterns: ["reuse", "existing", "current", "already", "as-is", "leverage"],
+    description: "Leveraging existing platforms reduces new build effort and validation cycles.",
+    rangeImpact: "Higher reuse pushes the range lower without reducing confidence."
+  },
+  {
+    id: "automation",
+    label: "Automation and self-service",
+    category: "Labor",
+    patterns: ["automation", "self-service", "template", "workflow", "script", "ci/cd"],
+    description: "Automated delivery steps compress effort and reduce manual handoffs.",
+    rangeImpact: "Automation narrows the delivery window and reduces variance."
+  },
+  {
+    id: "cloud",
+    label: "Cloud optimization",
+    category: "Infrastructure",
+    patterns: ["reserved instance", "savings plan", "credits", "optimization", "autoscaling", "serverless", "right-size"],
+    description: "Optimization levers lower infrastructure run-rate and operational overhead.",
+    rangeImpact: "Well-defined optimization levers reduce infra-heavy scenario highs."
+  },
+  {
+    id: "managed",
+    label: "Managed services",
+    category: "Operations",
+    patterns: ["managed service", "saas", "vendor", "platform", "outsource", "partner"],
+    description: "Managed platforms reduce ongoing maintenance and support burden.",
+    rangeImpact: "Service consolidation lowers operational cost exposure."
+  },
+  {
+    id: "phased",
+    label: "Phased delivery",
+    category: "Risk",
+    patterns: ["phase", "pilot", "mvp", "incremental", "rollout", "staged"],
+    description: "Phased rollout limits upfront effort and reduces risk-driven padding.",
+    rangeImpact: "Phasing improves confidence on the initial scenario band."
+  },
+  {
+    id: "standardize",
+    label: "Standardization and templates",
+    category: "Process",
+    patterns: ["standard", "template", "playbook", "reference architecture", "repeatable"],
+    description: "Using proven patterns speeds delivery and reduces rework.",
+    rangeImpact: "Repeatable delivery lowers both labor and QA effort."
   }
 ] as const;
 
@@ -223,6 +282,47 @@ function buildUnknowns(
   }
 
   return unknowns.slice(0, 4);
+}
+
+function buildFactorSignals(
+  rules: typeof DRIVER_RULES | typeof SAVINGS_RULES,
+  sections: ReadonlyArray<{ label: string; text: string }>,
+  contextCount: number
+) {
+  return rules
+    .map((rule) => {
+      const sources: string[] = [];
+      let score = 0;
+
+      for (const section of sections) {
+        const sectionScore = rule.patterns.reduce(
+          (sum, term) => sum + countOccurrences(section.text, term),
+          0
+        );
+        if (sectionScore > 0) {
+          sources.push(section.label);
+          score += sectionScore;
+        }
+      }
+
+      if (contextCount > 0) {
+        score += 1;
+        if (!sources.includes("Context docs")) sources.push("Context docs");
+      }
+
+      return {
+        id: rule.id,
+        label: rule.label,
+        score,
+        impact: score >= 6 ? "high" : score >= 3 ? "medium" : "low",
+        category: rule.category,
+        description: rule.description,
+        sources,
+        rangeImpact: rule.rangeImpact
+      } as EstimateDriver;
+    })
+    .filter((driver) => driver.score > 0)
+    .sort((a, b) => b.score - a.score);
 }
 
 function confidenceLabel(confidence: number) {
@@ -296,39 +396,8 @@ export function buildEstimateCopilotModel(args: {
   const contextCount = workspace?.contextDocuments.length ?? 0;
   const markdownCount = workspace?.markdownFiles.length ?? 0;
 
-  const drivers = DRIVER_RULES.map((rule) => {
-    const sources: string[] = [];
-    let score = 0;
-
-    for (const section of sections) {
-      const sectionScore = rule.patterns.reduce(
-        (sum, term) => sum + countOccurrences(section.text, term),
-        0
-      );
-      if (sectionScore > 0) {
-        sources.push(section.label);
-        score += sectionScore;
-      }
-    }
-
-    if (contextCount > 0 && /integration|data|compliance|ai/.test(rule.id)) {
-      score += 1;
-      if (!sources.includes("Context docs")) sources.push("Context docs");
-    }
-
-    return {
-      id: rule.id,
-      label: rule.label,
-      score,
-      impact: score >= 6 ? "high" : score >= 3 ? "medium" : "low",
-      description: rule.description,
-      sources,
-      rangeImpact: rule.rangeImpact
-    } as EstimateDriver;
-  })
-    .filter((driver) => driver.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 4);
+  const drivers = buildFactorSignals(DRIVER_RULES, sections, contextCount).slice(0, 4);
+  const savings = buildFactorSignals(SAVINGS_RULES, sections, contextCount).slice(0, 4);
 
   const complexityScore =
     drivers.reduce((sum, driver) => sum + driver.score, 0) +
@@ -475,6 +544,7 @@ export function buildEstimateCopilotModel(args: {
     assumptions,
     unknowns,
     drivers,
+    savings,
     scenarios,
     nextQuestions: nextQuestions.slice(0, 4),
     traceability,
@@ -494,6 +564,9 @@ export function buildCostEstimateMarkdown(
   const drivers = model.drivers.length
     ? model.drivers.map((driver) => `- ${driver.label}: ${driver.description}`).join("\n")
     : "- Add more project detail to surface drivers.";
+  const savings = model.savings.length
+    ? model.savings.map((item) => `- ${item.label}: ${item.description}`).join("\n")
+    : "- Add known savings levers (reuse, managed services, or optimization) to surface this section.";
   const assumptions = model.assumptions.length
     ? model.assumptions.map((item) => `- ${item}`).join("\n")
     : "- Capture delivery assumptions in baseline.md to strengthen this section.";
@@ -516,6 +589,9 @@ ${model.executiveSummary}
 
 ## Top Cost Drivers
 ${drivers}
+
+## Cost Savings Levers
+${savings}
 
 ## Assumptions
 ${assumptions}

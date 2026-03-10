@@ -18,6 +18,14 @@ export type WorkspaceSupplementalFile = {
   ext: string;
 };
 
+export type SearchResult = {
+  path: string;
+  name: string;
+  ext: string;
+  snippet: string;
+  score: number;
+};
+
 export type Workspace = {
   id?: string | null;
   name?: string;
@@ -159,6 +167,19 @@ export class WorkspaceManager {
     });
   }
 
+  async getContextDocumentContent(
+    workspace: Workspace,
+    path: string
+  ): Promise<{ path: string; contents: string; ext: string }> {
+    if (!window.curator?.getContextDocumentContent) {
+      throw new Error("Context document content is not available");
+    }
+    return window.curator.getContextDocumentContent({
+      root: workspace.root,
+      path
+    });
+  }
+
   async saveTextFile(
     workspace: Workspace,
     path: string,
@@ -209,5 +230,35 @@ export class WorkspaceManager {
       throw new Error("Open path is not available");
     }
     await window.curator.openPath({ path });
+  }
+
+  async searchFiles(
+    workspace: Workspace,
+    query: string,
+    limit = 50
+  ): Promise<SearchResult[]> {
+    if (!window.curator?.searchFiles) {
+      return [];
+    }
+    return window.curator.searchFiles({
+      root: workspace.root,
+      query,
+      limit
+    });
+  }
+
+  async searchContext(
+    workspace: Workspace,
+    query: string,
+    limit = 12
+  ): Promise<SearchResult[]> {
+    if (!window.curator?.searchContext) {
+      return [];
+    }
+    return window.curator.searchContext({
+      root: workspace.root,
+      query,
+      limit
+    });
   }
 }

@@ -74,11 +74,12 @@ Electron + React + TypeScript
 
 1. Markdown Workspace Manager  
 2. WYSIWYG Markdown Editor (tables required)  
-3. Agent Orchestrator  
-4. File Permission Gate  
-5. Config Manager  
-6. Capability Framework  
-7. Doc Rendering Engine (local .NET worker)
+3. Search Index + Retrieval (SQLite FTS5)  
+4. Agent Orchestrator  
+5. File Permission Gate  
+6. Config Manager  
+7. Capability Framework  
+8. Doc Rendering Engine (local .NET worker)
 
 ## Workspace Structure
 
@@ -90,6 +91,8 @@ Electron + React + TypeScript
 - `context-documents/` auto-created on workspace open/creation; accepts text/code files (`.txt`, `.md`, `.cs`, `.js`, `.json`, `.yaml`, `.java`, etc.)
 - `templates/` auto-created on workspace open/creation; accepts `.docx` and `.dot` files only
 - Editor area is large and file-editor-like to support long-form editing
+- Full-text search is backed by SQLite FTS5; index updates on file save/import and powers explorer search + chat context retrieval
+- Office docs (`.docx`, `.pdf`, `.pptx`, `.xlsx`) are converted to Markdown sidecars and searched via those conversions; opening a search hit for a binary file shows the Markdown equivalent in the editor
 
 ## Guided Onboarding
 

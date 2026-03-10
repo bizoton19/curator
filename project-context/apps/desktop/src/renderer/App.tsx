@@ -6,7 +6,8 @@ import {
   Workspace,
   WorkspaceFileId,
   WorkspaceManager,
-  WorkspaceSupplementalFile
+  WorkspaceSupplementalFile,
+  SearchResult
 } from "../core";
 import { EditorController } from "../core/wysiwyg/EditorController";
 import { MarkdownEditor } from "./editor/MarkdownEditor";
@@ -17,8 +18,10 @@ import {
   buildEstimateCopilotModel,
   formatCurrency,
   summarizeDiff,
-  type EstimateScenarioId
+  type EstimateScenarioId,
+  type EstimateDriver
 } from "./copilot";
+import helpKbRaw from "./kb/help.md?raw";
 
 type OpenResult = Workspace | null;
 type PermissionResult = boolean;
@@ -39,6 +42,9 @@ type PendingEdit = {
   newContent: string;
   label: string;
 };
+
+const MAX_CONTEXT_DOCUMENTS = 10;
+const MAX_CHAT_CONTEXT_CHARS = 2400;
 
 const BASELINE_TEMPLATE =
   "# Baseline\n\n## Project Overview\n\n## Scope\n\n## Assumptions\n\n";
@@ -75,6 +81,8 @@ const REQUIREMENTS_EXAMPLE = `# Requirements
 const CURATOR_EDITS_BLOCK_REGEX = /```curator_edits\s*\n([\s\S]*?)\n```/;
 type CuratorEdit = { file: string; content: string };
 type CuratorEditsPayload = { edits: CuratorEdit[] };
+type HelpSection = { title: string; body: string; keywords: string[] };
+type InsightGroup = { category: string; items: EstimateDriver[] };
 
 function parseCuratorEdits(message: string): CuratorEditsPayload | null {
   const match = message.match(CURATOR_EDITS_BLOCK_REGEX);
@@ -104,6 +112,76 @@ function normalizeRef(value: string): string {
 function stripExtensionLike(filename: string): string {
   const index = filename.lastIndexOf(".");
   return index > 0 ? filename.slice(0, index) : filename;
+}
+
+function parseHelpSections(raw: string): HelpSection[] {
+  const blocks = raw.split(/\n##\s+/).map((block) => block.trim()).filter(Boolean);
+  return blocks.map((block) => {
+    const lines = block.split("\n");
+    const title = lines[0]?.replace(/^#+\s*/, "").trim() || "Help";
+    const body = lines.slice(1).join("\n").trim();
+    const keywordSeed = `${title} ${body}`.toLowerCase();
+    const keywords = Array.from(
+      new Set(
+        keywordSeed
+          .replace(/[^a-z0-9\s-]/g, " ")
+          .split(/\s+/)
+          .filter((token) => token.length > 2)
+      )
+    );
+    return { title, body, keywords };
+  });
+}
+
+function getHelpResponse(
+  message: string,
+  sections: HelpSection[]
+): { title: string; body: string } | null {
+  const query = message.trim().toLowerCase();
+  if (!query) return null;
+  const trigger =
+    /(how do i|how to|what is|where is|explain|help|meaning)/.test(query) ||
+    /(baseline|requirements|tasks|context|template|export|workspace|search|chat|settings|api key)/.test(query);
+  if (!trigger) return null;
+  let best: { score: number; section: HelpSection } | null = null;
+  for (const section of sections) {
+    let score = 0;
+    if (query.includes(section.title.toLowerCase())) score += 4;
+    for (const keyword of section.keywords) {
+      if (query.includes(keyword)) score += 1;
+    }
+    if (!best || score > best.score) {
+      best = { score, section };
+    }
+  }
+  if (!best || best.score === 0) return null;
+  return { title: best.section.title, body: best.section.body };
+}
+
+function renderSnippet(snippet: string) {
+  if (!snippet) return null;
+  const parts = snippet.split(/\[(.*?)\]/g);
+  return parts.map((part, index) =>
+    index % 2 === 1 ? (
+      <mark key={`${part}-${index}`}>{part}</mark>
+    ) : (
+      <span key={`${part}-${index}`}>{part}</span>
+    )
+  );
+}
+
+function groupInsights(items: EstimateDriver[]): InsightGroup[] {
+  const groups = new Map<string, EstimateDriver[]>();
+  for (const item of items) {
+    const key = item.category || "General";
+    const existing = groups.get(key) ?? [];
+    existing.push(item);
+    groups.set(key, existing);
+  }
+  return Array.from(groups.entries()).map(([category, groupItems]) => ({
+    category,
+    items: groupItems
+  }));
 }
 
 function resolveWorkspaceEditTarget(
@@ -428,10 +506,17 @@ This estimate covers a 5-year total cost of ownership for an enterprise AI/ML so
 const TRAINING_STEPS = [
   {
     id: "intro",
-    title: "Welcome to Curator Training",
-    description: "This guided walkthrough uses a real scenario: estimating an AI/ML project for automated product labeling. You'll see how to structure baseline assumptions, gather context, define requirements, author tasks, and export your final estimate.",
+    title: "Welcome to Guide Mode",
+    description: "Walk through a real cost estimate from start to finish. You'll create a workspace, add baseline assumptions, context, requirements, and tasks, then review and export your estimate.",
     highlight: null,
     action: null
+  },
+  {
+    id: "createWorkspace",
+    title: "Create a workspace",
+    description: "Give your estimate a name. All your files (baseline, requirements, tasks, and exports) will live in this workspace.",
+    highlight: "createWorkspace",
+    action: "createWorkspace"
   },
   {
     id: "baseline",
@@ -625,6 +710,10 @@ declare global {
         root: string;
         path: string;
       }) => Promise<{ path: string; contents: string; ext: string }>;
+      getContextDocumentContent: (payload: {
+        root: string;
+        path: string;
+      }) => Promise<{ path: string; contents: string; ext: string }>;
       saveTextFile: (payload: {
         root: string;
         path: string;
@@ -682,6 +771,8 @@ declare global {
       dbGetSnapshots: (payload: { workspacePath: string; fileId: string }) => Promise<{ id: number; content: string; timestamp: number }[]>;
       dbSetLastOpened: (payload: { workspacePath: string; fileId: string }) => Promise<void>;
       dbGetLastOpened: (payload: { workspacePath: string }) => Promise<string | null>;
+      searchFiles: (payload: { root: string; query: string; limit?: number }) => Promise<SearchResult[]>;
+      searchContext: (payload: { root: string; query: string; limit?: number }) => Promise<SearchResult[]>;
     };
   }
 }
@@ -709,6 +800,7 @@ export default function App() {
     "unknown" | "granted" | "denied"
   >("unknown");
   const [statusMessage, setStatusMessage] = useState<string>("");
+  const [contextImporting, setContextImporting] = useState(false);
   const [contextDragActive, setContextDragActive] = useState(false);
   const [templateDragActive, setTemplateDragActive] = useState(false);
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
@@ -717,7 +809,9 @@ export default function App() {
   const [leftSidebarTab, setLeftSidebarTab] = useState<"workspaces" | "steps">(
     "workspaces"
   );
-  const [workspaceSearch, setWorkspaceSearch] = useState("");
+  const [fileSearch, setFileSearch] = useState("");
+  const [fileSearchResults, setFileSearchResults] = useState<SearchResult[]>([]);
+  const [fileSearchLoading, setFileSearchLoading] = useState(false);
   const [newWorkspaceModalOpen, setNewWorkspaceModalOpen] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
   const [newContextOpen, setNewContextOpen] = useState(false);
@@ -793,13 +887,15 @@ export default function App() {
   const [isResizing, setIsResizing] = useState(false);
   const [chatContextFiles, setChatContextFiles] = useState<File[]>([]);
   const chatLogRef = useRef<HTMLDivElement>(null);
-  
+  const fileSearchInputRef = useRef<HTMLInputElement>(null);
+
   const [pendingEdits, setPendingEdits] = useState<PendingEdit[]>([]);
   const [copilotScenario, setCopilotScenario] = useState<EstimateScenarioId>("expected");
 
   const workspaceManager = useMemo(() => new WorkspaceManager(), []);
   const permissionGate = useMemo(() => new PermissionGate(), []);
   const editorController = useMemo(() => new EditorController(), []);
+  const helpSections = useMemo(() => parseHelpSections(helpKbRaw), []);
   const markdownExtensions = useMemo(
     () => new Set([".md", ".markdown"]),
     []
@@ -845,7 +941,11 @@ export default function App() {
         ".hpp",
         ".cs",
         ".ps1",
-        ".sh"
+        ".sh",
+        ".docx",
+        ".pdf",
+        ".pptx",
+        ".xlsx"
       ]),
     []
   );
@@ -942,6 +1042,8 @@ export default function App() {
       setActiveWorkspaceId(entry.id);
       setActiveCoreFile(initialFile);
       setDrafts(nextDrafts);
+      setFileSearch("");
+      setFileSearchResults([]);
       setShowWizard(shouldShowWizard);
       setShowDocxFlow(false);
       setWizardStep("baseline");
@@ -995,6 +1097,30 @@ export default function App() {
     }
   };
 
+  const refreshActiveWorkspace = async () => {
+    if (openingWorkspace) return;
+    const activeEntry = workspaceList.find((item) => item.id === activeWorkspaceId);
+    if (!activeEntry) {
+      setStatusMessage("No active workspace to refresh.");
+      return;
+    }
+    setStatusMessage("Refreshing workspace…");
+    await loadWorkspace(activeEntry, false, "refresh");
+  };
+
+  const copyWorkspacePath = async () => {
+    if (!workspaceRoot) {
+      setStatusMessage("No workspace path to copy.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(workspaceRoot);
+      setStatusMessage("Path copied to clipboard.");
+    } catch {
+      setStatusMessage("Could not copy path.");
+    }
+  };
+
   const addWorkspace = async () => {
     setNewWorkspaceModalOpen(true);
   };
@@ -1034,6 +1160,10 @@ export default function App() {
       setNewWorkspaceModalOpen(false);
       setNewWorkspaceName("");
       await loadWorkspace(summary, true, "add");
+      if (trainingMode && trainingStepIndex === 1) {
+        setTrainingStepIndex(2);
+        navigateToTrainingStep(TRAINING_STEPS[2]);
+      }
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Creation failed.");
     } finally {
@@ -1190,10 +1320,7 @@ export default function App() {
       setPendingEdits(prev => prev.filter(p => p.id !== edit.id));
       
       // Refresh workspace if needed
-      const activeEntry = workspaceList.find((w) => w.id === activeWorkspaceId);
-      if (activeEntry) {
-        await loadWorkspace(activeEntry, false, "refresh");
-      }
+      await refreshActiveWorkspace();
       setStatusMessage(`Applied changes to ${edit.label}`);
     } catch (error) {
       setStatusMessage("Failed to apply edit.");
@@ -1286,7 +1413,9 @@ export default function App() {
       setActiveEditor({
         kind: "supplemental",
         file,
-        isMarkdown: markdownExtensions.has(file.ext)
+        isMarkdown:
+          markdownExtensions.has(file.ext) ||
+          [".pdf", ".docx", ".pptx", ".xlsx"].includes(file.ext)
       });
       setShowWizard(false);
       setShowDocxFlow(false);
@@ -1300,6 +1429,25 @@ export default function App() {
         error instanceof Error ? error.message : "Open failed."
       );
     }
+  };
+
+  const openSearchResult = async (result: SearchResult) => {
+    if (!workspace) return;
+    const coreMatch = WORKSPACE_FILE_ORDER.find((id) => {
+      const corePath = workspace.files[id]?.path;
+      if (corePath && corePath === result.path) return true;
+      const name = basenameLike(result.path).toLowerCase();
+      return name === `${id}.md`;
+    });
+    if (coreMatch) {
+      handleSwitchFile(coreMatch);
+      return;
+    }
+    await openSupplementalFile({
+      name: result.name,
+      path: result.path,
+      ext: result.ext
+    });
   };
 
   const saveSupplementalFile = async (file: WorkspaceSupplementalFile) => {
@@ -1416,6 +1564,16 @@ export default function App() {
     const droppedFiles = Array.from(event.dataTransfer.files);
     if (droppedFiles.length === 0) return;
 
+    if (
+      target === "context" &&
+      workspace.contextDocuments.length >= MAX_CONTEXT_DOCUMENTS
+    ) {
+      setStatusMessage(
+        `Maximum ${MAX_CONTEXT_DOCUMENTS} supporting documents. Remove one to add another.`
+      );
+      return;
+    }
+
     const permitted = await permissionGate.request({
       resource: "workspace",
       action: "write",
@@ -1435,54 +1593,80 @@ export default function App() {
       target === "context" ? contextExtensions : templateExtensions;
     const invalidFiles: string[] = [];
     const imported: string[] = [];
+    const remainingContextSlots =
+      target === "context"
+        ? Math.max(
+            0,
+            MAX_CONTEXT_DOCUMENTS - workspace.contextDocuments.length
+          )
+        : Infinity;
 
-    for (const file of droppedFiles) {
-      const path = (file as File & { path?: string }).path;
-      const ext = getFileExtension(file.name);
-      if (!allowed.has(ext)) {
-        invalidFiles.push(file.name);
-        continue;
-      }
-      if (!path) {
-        invalidFiles.push(file.name);
-        continue;
-      }
-
-      try {
-        const saved =
-          target === "context"
-            ? await workspaceManager.importContextFile(workspace, path)
-            : await workspaceManager.importTemplateFile(workspace, path);
-        imported.push(saved.name);
-        setWorkspace((current) => {
-          if (!current) return current;
-          const listKey =
-            target === "context" ? "contextDocuments" : "templates";
-          const existing = current[listKey];
-          const updated = [...existing, saved].sort((a, b) =>
-            a.name.localeCompare(b.name)
-          );
-          return { ...current, [listKey]: updated };
-        });
-      } catch (error) {
-        invalidFiles.push(file.name);
-      }
+    if (target === "context") {
+      setContextImporting(true);
+      setStatusMessage("Importing supporting documents…");
     }
 
-    setPermissionStatus("granted");
-    if (imported.length && invalidFiles.length) {
-      setStatusMessage(
-        `Imported ${imported.length} file(s). Skipped ${invalidFiles.length} file(s).`
-      );
-    } else if (imported.length) {
-      setStatusMessage(`Imported ${imported.length} file(s).`);
-    } else if (invalidFiles.length) {
-      setStatusMessage("No files imported. Unsupported file types.");
+    try {
+      for (const file of droppedFiles) {
+        if (imported.length >= remainingContextSlots) break;
+        const path = (file as File & { path?: string }).path;
+        const ext = getFileExtension(file.name);
+        if (!allowed.has(ext)) {
+          invalidFiles.push(file.name);
+          continue;
+        }
+        if (!path) {
+          invalidFiles.push(file.name);
+          continue;
+        }
+
+        try {
+          const saved =
+            target === "context"
+              ? await workspaceManager.importContextFile(workspace, path)
+              : await workspaceManager.importTemplateFile(workspace, path);
+          imported.push(saved.name);
+          setWorkspace((current) => {
+            if (!current) return current;
+            const listKey =
+              target === "context" ? "contextDocuments" : "templates";
+            const existing = current[listKey];
+            const updated = [...existing, saved].sort((a, b) =>
+              a.name.localeCompare(b.name)
+            );
+            return { ...current, [listKey]: updated };
+          });
+        } catch (error) {
+          invalidFiles.push(file.name);
+        }
+      }
+
+      setPermissionStatus("granted");
+      if (imported.length && invalidFiles.length) {
+        setStatusMessage(
+          `Imported ${imported.length} file(s). Skipped ${invalidFiles.length} file(s).`
+        );
+      } else if (imported.length) {
+        setStatusMessage(`Imported ${imported.length} file(s).`);
+      } else if (invalidFiles.length) {
+        setStatusMessage("No files imported. Unsupported file types.");
+      }
+    } finally {
+      if (target === "context") {
+        setContextImporting(false);
+      }
     }
   };
 
   const startContextUpload = async () => {
     if (!workspace) return;
+    if (contextImporting) return;
+    if (workspace.contextDocuments.length >= MAX_CONTEXT_DOCUMENTS) {
+      setStatusMessage(
+        `Maximum ${MAX_CONTEXT_DOCUMENTS} supporting documents. Remove one to add another.`
+      );
+      return;
+    }
     setStatusMessage("");
     const permitted = await permissionGate.request({
       resource: "workspace",
@@ -1497,6 +1681,8 @@ export default function App() {
     }
 
     try {
+      setContextImporting(true);
+      setStatusMessage("Importing supporting documents…");
       const imported = await workspaceManager.selectContextFiles(workspace);
       if (imported.length === 0) {
         setStatusMessage("No files selected.");
@@ -1510,11 +1696,15 @@ export default function App() {
         return { ...current, contextDocuments: updated };
       });
       setPermissionStatus("granted");
-      setStatusMessage(`Imported ${imported.length} file(s).`);
+      setStatusMessage(
+        `Imported ${imported.length} file(s). Conversions run in the background.`
+      );
     } catch (error) {
       setStatusMessage(
         error instanceof Error ? error.message : "Import failed."
       );
+    } finally {
+      setContextImporting(false);
     }
   };
 
@@ -1672,10 +1862,7 @@ export default function App() {
       }
       
       // Refresh workspace to show new files
-      const entry = workspaceList.find((w) => w.id === activeWorkspaceId);
-      if (entry) {
-        await loadWorkspace(entry, false, "refresh");
-      }
+      await refreshActiveWorkspace();
       
       const fileNames = chatContextFiles.map((f) => f.name).join(", ");
       setChatMessages((current) => [
@@ -1704,6 +1891,24 @@ export default function App() {
         text: message
       }).catch(e => console.error("Failed to save user message", e));
     }
+
+    const helpResponse = getHelpResponse(message, helpSections);
+    if (helpResponse) {
+      const responseText = `**${helpResponse.title}**\n\n${helpResponse.body}`;
+      setChatMessages((current) => [
+        ...current,
+        { role: "agent", text: responseText }
+      ]);
+      if (workspace && window.curator?.dbSaveMessage) {
+        window.curator.dbSaveMessage({
+          workspacePath: workspace.root,
+          role: "agent",
+          text: responseText
+        }).catch((e) => console.error("Failed to save agent message", e));
+      }
+      setChatLoading(false);
+      return;
+    }
     
     // Get API key from config
     try {
@@ -1728,7 +1933,59 @@ export default function App() {
       if (drafts.tasks) {
         contextParts.push(`## Tasks Document\n${drafts.tasks}`);
       }
-      
+      if (workspace) {
+        const supplementalCandidates = [
+          ...workspace.contextDocuments,
+          ...workspace.markdownFiles
+        ];
+        if (supplementalCandidates.length > 0) {
+          let matches: SearchResult[] = [];
+          if (message.trim()) {
+            matches = await workspaceManager.searchContext(
+              workspace,
+              message.trim(),
+              6
+            );
+          }
+          const corePaths = new Set(
+            WORKSPACE_FILE_ORDER.map((id) => workspace.files[id]?.path).filter(
+              Boolean
+            )
+          );
+          const selected = matches.length
+            ? matches
+            : supplementalCandidates.slice(0, 6).map((file) => ({
+                path: file.path,
+                name: file.name,
+                ext: file.ext,
+                snippet: "",
+                score: 0
+              }));
+          const seen = new Set<string>();
+          for (const match of selected) {
+            if (!match.path || seen.has(match.path) || corePaths.has(match.path)) {
+              continue;
+            }
+            seen.add(match.path);
+            try {
+              const { contents } = await workspaceManager.readTextFile(
+                workspace,
+                match.path
+              );
+              if (contents?.trim()) {
+                const trimmed =
+                  contents.length > MAX_CHAT_CONTEXT_CHARS
+                    ? `${contents.slice(0, MAX_CHAT_CONTEXT_CHARS)}\n…(truncated)`
+                    : contents;
+                contextParts.push(`## Relevant: ${match.name}\n${trimmed}`);
+              }
+            } catch {
+              // skip failed loads
+            }
+          }
+        }
+      }
+
       // Get current file being edited
       let currentFileContent = "";
       if (activeEditor.kind === "core") {
@@ -1969,26 +2226,32 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
     // Guide Mode: workspace-first onboarding instead of a separate training workspace
     setTrainingOriginalDrafts({ ...drafts });
 
-    if (!workspace) {
-      setStatusMessage(
-        "Let’s get started by creating a workspace. Use the + tab in the left sidebar to name your first workspace."
-      );
-    } else {
-      setStatusMessage(
-        `Guide Mode started for "${workspace.name ?? "current workspace"}". We’ll walk through baseline, context, requirements, tasks, and a first estimate.`
-      );
-    }
 
     setTrainingMode(true);
-    setTrainingStepIndex(0);
-    setShowWizard(true);
-    setWizardStep("baseline");
     setLeftSidebarTab("steps");
-    openCopilotPanel();
+    setShowWizard(true);
+    if (!workspace) {
+      setTrainingStepIndex(1);
+      setWizardStep("baseline");
+      setNewWorkspaceModalOpen(true);
+      setStatusMessage("Create a workspace to get started.");
+    } else {
+      setTrainingStepIndex(0);
+      setWizardStep("baseline");
+      setStatusMessage(
+        `Guide Mode: "${workspace.name ?? "current workspace"}". Work through each step to build your estimate.`
+      );
+      openCopilotPanel();
+    }
   };
 
   const navigateToTrainingStep = (step: typeof TRAINING_STEPS[number]) => {
-    if (step.highlight === "baseline") {
+    if (step.highlight === "createWorkspace") {
+      setShowWizard(true);
+      setWizardStep("baseline");
+      setNewWorkspaceModalOpen(true);
+      setShowDocxFlow(false);
+    } else if (step.highlight === "baseline") {
       setWizardStep("baseline");
       setShowWizard(true);
       setShowDocxFlow(false);
@@ -2060,7 +2323,10 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
 
   const handleTrainingAction = (action: string | null) => {
     if (!action) return;
-    
+    if (action === "createWorkspace") {
+      setNewWorkspaceModalOpen(true);
+      return;
+    }
     if (action === "viewEstimate") {
       const costEstimateFile = workspace?.markdownFiles.find(
         (f) => f.name === "cost-estimate.md"
@@ -2306,6 +2572,38 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const query = fileSearch.trim();
+    if (!workspace || !query) {
+      setFileSearchResults([]);
+      setFileSearchLoading(false);
+      return;
+    }
+    setFileSearchLoading(true);
+    const handle = window.setTimeout(async () => {
+      try {
+        const results = await workspaceManager.searchFiles(workspace, query, 50);
+        if (!cancelled) {
+          setFileSearchResults(results);
+        }
+      } catch {
+        if (!cancelled) {
+          setFileSearchResults([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setFileSearchLoading(false);
+        }
+      }
+    }, 200);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [fileSearch, workspace, workspaceManager]);
+
   const activeExample = baselineGuideOpen
     ? { title: "Baseline examples", markdown: BASELINE_EXAMPLE }
     : requirementsGuideOpen
@@ -2330,7 +2628,9 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
     activeEditor.kind === "core" ? true : activeEditor.isMarkdown;
   const csvPreviewEnabled =
     activeEditor.kind === "supplemental" &&
-    (activeSupplementalExt === ".csv" || activeSupplementalExt === ".tsv");
+    (activeSupplementalExt === ".csv" ||
+      activeSupplementalExt === ".tsv" ||
+      activeSupplementalExt === ".xlsx");
   const activeDescription = (() => {
     if (activeEditor.kind === "core") {
       return CORE_DESCRIPTIONS[activeEditor.id];
@@ -2339,8 +2639,12 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
     const isContext =
       path.includes("/context-documents/") ||
       path.includes("\\context-documents\\");
-    if (activeSupplementalExt === ".csv" || activeSupplementalExt === ".tsv") {
-      return "CSV/TSV data file. Use the table preview for quick scanning.";
+    if (
+      activeSupplementalExt === ".csv" ||
+      activeSupplementalExt === ".tsv" ||
+      activeSupplementalExt === ".xlsx"
+    ) {
+      return "Spreadsheet data (CSV/TSV/XLSX). Use the table preview for quick scanning.";
     }
     if (activeEditor.isMarkdown) {
       return isContext
@@ -2355,7 +2659,9 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
     if (!csvPreviewEnabled || !csvPreviewOpen) return null;
     const raw = supplementalDrafts[activeSupplementalPath] ?? "";
     const delimiter =
-      activeSupplementalExt === ".tsv" ? "\t" : undefined;
+      activeSupplementalExt === ".tsv" || activeSupplementalExt === ".xlsx"
+        ? "\t"
+        : undefined;
     return parseCsv(raw, delimiter);
   }, [
     csvPreviewEnabled,
@@ -2403,6 +2709,14 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
   );
 
   const activeScenario = copilotModel.scenarios[copilotScenario];
+  const driverGroups = useMemo(
+    () => groupInsights(copilotModel.drivers),
+    [copilotModel.drivers]
+  );
+  const savingsGroups = useMemo(
+    () => groupInsights(copilotModel.savings),
+    [copilotModel.savings]
+  );
 
   return (
     <div className="app">
@@ -2487,106 +2801,92 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
           <>
           <div className="sidebar-header">
             <div className="sidebar-tabs">
-              <div
-                className={`sidebar-tab sidebar-tab--with-plus ${
-                  leftSidebarTab === "workspaces" ? "active" : ""
-                }`}
-              >
-                <button
-                  type="button"
-                  className="sidebar-tab-label"
-                  onClick={() => setLeftSidebarTab("workspaces")}
-                  title="View and manage workspaces"
-                >
-                  Workspaces
-                </button>
-                <button
-                  type="button"
-                  className="sidebar-tab-plus"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    addWorkspace();
-                  }}
-                  data-tooltip="Add or open a workspace"
-                >
-                  +
-                </button>
-              </div>
               <button
-                className={`sidebar-tab ${
-                  leftSidebarTab === "steps" ? "active" : ""
-                }`}
-                onClick={() => setLeftSidebarTab("steps")}
-                title="Navigate workflow steps"
+                type="button"
+                className={`sidebar-tab ${leftSidebarTab === "workspaces" ? "active" : ""}`}
+                onClick={() => setLeftSidebarTab("workspaces")}
+                title="Explorer"
               >
-                Steps
+                <svg className="sidebar-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
+                <span className="sidebar-tab-text">Explorer</span>
+              </button>
+              <button
+                type="button"
+                className="sidebar-tab sidebar-tab--add"
+                onClick={(e) => { e.stopPropagation(); addWorkspace(); }}
+                data-tooltip="Add or open workspace"
+              >
+                <svg className="sidebar-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
+              <button
+                className={`sidebar-tab ${leftSidebarTab === "steps" ? "active" : ""}`}
+                onClick={() => setLeftSidebarTab("steps")}
+                title="Steps"
+              >
+                <svg className="sidebar-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+                </svg>
+                <span className="sidebar-tab-text">Steps</span>
               </button>
             </div>
           </div>
 
           {leftSidebarTab === "workspaces" ? (
             <div className="workspace-tree">
-              <div className="workspace-search">
-                <input
-                  className="workspace-search-input"
-                  placeholder="Search workspaces..."
-                  value={workspaceSearch}
-                  onChange={(event) => setWorkspaceSearch(event.target.value)}
-                />
-              </div>
-              
-              <div className="workspace-actions-bar">
-                <span className="workspace-root-label" title={workspaceRoot}>
-                  {workspaceRoot ? `Root: ...${workspaceRoot.slice(-20)}` : "No root"}
-                </span>
-                <div className="workspace-tree-controls">
+              <div className="sidebar-toolbar">
+                <div className="sidebar-toolbar-actions">
                   <button
-                    className="sidebar-icon-btn"
-                    onClick={() => {
-                      const newState = !(coreOpen && contextOpen && templatesOpen);
-                      setCoreOpen(newState);
-                      setContextOpen(newState);
-                      setTemplatesOpen(newState);
-                    }}
-                    data-tooltip="Toggle all folders"
+                    type="button"
+                    className="sidebar-toolbar-icon"
+                    onClick={copyWorkspacePath}
+                    data-tooltip="Copy workspace path"
+                    disabled={!workspaceRoot}
                   >
-                    <svg className="sidebar-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      {coreOpen && contextOpen && templatesOpen ? (
-                        <>
-                          <polyline points="6 9 12 15 18 9" />
-                          <line x1="6" y1="4" x2="18" y2="4" />
-                        </>
-                      ) : (
-                        <>
-                          <polyline points="9 6 15 12 9 18" />
-                          <line x1="4" y1="6" x2="4" y2="18" />
-                        </>
-                      )}
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                     </svg>
                   </button>
                   <button
-                    className="sidebar-icon-btn"
-                    onClick={() => setLeftSidebarCollapsed(true)}
-                    data-tooltip="Collapse sidebar"
+                    type="button"
+                    className="sidebar-toolbar-icon"
+                    onClick={refreshActiveWorkspace}
+                    data-tooltip="Refresh"
+                    disabled={openingWorkspace || contextImporting || !activeWorkspaceId}
                   >
-                    <svg className="sidebar-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                      <line x1="9" y1="3" x2="9" y2="21" />
-                      <path d="M17 12h-4" />
-                      <path d="M15 10l-2 2 2 2" />
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+                      <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10" /><path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="sidebar-toolbar-icon"
+                    onClick={() => { setCoreOpen((o) => !o); setContextOpen((o) => !o); setTemplatesOpen((o) => !o); }}
+                    data-tooltip="Toggle folders"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      {coreOpen && contextOpen && templatesOpen ? <polyline points="6 9 12 15 18 9" /> : <polyline points="9 6 15 12 9 18" />}
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="sidebar-toolbar-icon"
+                    onClick={() => setLeftSidebarCollapsed(true)}
+                    data-tooltip="Close sidebar"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M15 18l-6-6 6-6" />
                     </svg>
                   </button>
                 </div>
               </div>
 
               <div className="workspace-list">
-                {workspaceList
-                  .filter((entry) => {
-                    const query = workspaceSearch.trim().toLowerCase();
-                    if (!query) return true;
-                    return entry.name.toLowerCase().includes(query);
-                  })
-                  .map((entry) => {
+                {workspaceList.map((entry) => {
                     const isActive = entry.id === activeWorkspaceId;
                     return (
                       <div key={entry.id} className="workspace-node">
@@ -2614,6 +2914,74 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                                 </div>
                               </div>
                             ) : null}
+
+                            <div className="file-search">
+                              <div className="file-search-bar">
+                                <button
+                                  type="button"
+                                  className="file-search-icon"
+                                  onClick={() => fileSearchInputRef.current?.focus()}
+                                  data-tooltip="Search files"
+                                >
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <circle cx="11" cy="11" r="8" />
+                                    <path d="m21 21-4.35-4.35" />
+                                  </svg>
+                                </button>
+                                <input
+                                  ref={fileSearchInputRef}
+                                  className="file-search-input"
+                                  placeholder="Search files..."
+                                  value={fileSearch}
+                                  onChange={(e) => setFileSearch(e.target.value)}
+                                  type="text"
+                                />
+                                {fileSearch ? (
+                                  <button
+                                    className="file-search-clear"
+                                    onClick={() => {
+                                      setFileSearch("");
+                                      setFileSearchResults([]);
+                                    }}
+                                    aria-label="Clear search"
+                                  >
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                      <line x1="18" y1="6" x2="6" y2="18" />
+                                      <line x1="6" y1="6" x2="18" y2="18" />
+                                    </svg>
+                                  </button>
+                                ) : null}
+                              </div>
+                              {fileSearch ? (
+                                <div className="file-search-results">
+                                  {fileSearchLoading ? (
+                                    <div className="file-search-status">Searching…</div>
+                                  ) : fileSearchResults.length ? (
+                                    fileSearchResults.map((result) => (
+                                      <button
+                                        key={result.path}
+                                        className="file-search-row"
+                                        onClick={() => openSearchResult(result)}
+                                      >
+                                        <div className="file-search-name">{result.name}</div>
+                                        {result.snippet ? (
+                                          <div className="file-search-snippet">
+                                            {renderSnippet(result.snippet)}
+                                          </div>
+                                        ) : null}
+                                        <div className="file-search-path">
+                                          {result.path}
+                                        </div>
+                                      </button>
+                                    ))
+                                  ) : (
+                                    <div className="file-search-status">
+                                      No matches for "{fileSearch.trim()}"
+                                    </div>
+                                  )}
+                                </div>
+                              ) : null}
+                            </div>
 
                             <div className="file-tree">
                               <div className="tree-section">
@@ -2669,15 +3037,34 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                                     className="tree-section-action"
                                     onClick={startContextUpload}
                                     data-tooltip="Import reference files (rate cards, prior estimates, architecture docs)"
+                                    disabled={contextImporting}
                                   >
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                       <line x1="12" y1="5" x2="12" y2="19" />
                                       <line x1="5" y1="12" x2="19" y2="12" />
                                     </svg>
                                   </button>
+                                  <button
+                                    className="tree-section-action"
+                                    onClick={refreshActiveWorkspace}
+                                    data-tooltip="Refresh supporting documents"
+                                    disabled={openingWorkspace || contextImporting}
+                                  >
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <polyline points="23 4 23 10 17 10" />
+                                      <polyline points="1 20 1 14 7 14" />
+                                      <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10" />
+                                      <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14" />
+                                    </svg>
+                                  </button>
                                 </div>
                                 {contextOpen && (
                                   <div className="tree-section-children">
+                                    {contextImporting ? (
+                                      <div className="tree-inline-status">
+                                        Importing supporting documents and converting them to markdown…
+                                      </div>
+                                    ) : null}
                                     <div
                                       className={`tree-drop-area ${contextDragActive ? "tree-drop-area--active" : ""}`}
                                       onDragOver={(e) => { e.preventDefault(); setContextDragActive(true); }}
@@ -3180,13 +3567,28 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                             className="setup-btn setup-btn--secondary"
                             onClick={startContextUpload}
                             data-tooltip="Select files from your computer to add as context documents"
+                            disabled={contextImporting}
                           >
                             <svg className="setup-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                               <polyline points="17 8 12 3 7 8"/>
                               <line x1="12" y1="3" x2="12" y2="15"/>
                             </svg>
-                            Upload files
+                            {contextImporting ? "Importing…" : "Upload files"}
+                          </button>
+                          <button
+                            className="setup-btn setup-btn--secondary"
+                            onClick={refreshActiveWorkspace}
+                            data-tooltip="Refresh supporting documents from disk"
+                            disabled={openingWorkspace || contextImporting}
+                          >
+                            <svg className="setup-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="23 4 23 10 17 10" />
+                              <polyline points="1 20 1 14 7 14" />
+                              <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10" />
+                              <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14" />
+                            </svg>
+                            Refresh files
                           </button>
                           <button
                             className="setup-btn setup-btn--secondary"
@@ -3223,6 +3625,11 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                           Drag & drop .txt, .md, .json, .yaml, spreadsheets,
                           and other supporting files
                         </div>
+                        {contextImporting ? (
+                          <p className="context-import-status">
+                            Importing supporting documents and converting them to markdown…
+                          </p>
+                        ) : null}
                         {workspace?.contextDocuments.length ? (
                           <ul className="file-list">
                             {workspace.contextDocuments.map((file) => (
@@ -3524,6 +3931,121 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                     Open a workspace to save. You can still edit locally.
                   </div>
                 ) : null}
+
+                <section className="insights-panel">
+                  <div className="insights-header">
+                    <div>
+                      <span className="insights-kicker">Cost Insights</span>
+                      <h3>Drivers and savings levers</h3>
+                      <p className="muted">
+                        These insights update as you refine baseline, requirements, tasks, and context.
+                      </p>
+                    </div>
+                    <div className="insights-actions">
+                      <button className="ghost" onClick={openChatPanel}>
+                        Refine with chat
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="insights-kpis">
+                    <div className="insights-kpi">
+                      <span className="insights-kpi-label">Recommended range</span>
+                      <strong>
+                        {formatCurrency(activeScenario.low)} –{" "}
+                        {formatCurrency(activeScenario.high)}
+                      </strong>
+                      <span className="insights-kpi-subtitle">
+                        {copilotModel.confidenceLabel} ({activeScenario.confidence}%)
+                      </span>
+                    </div>
+                    <div className="insights-kpi">
+                      <span className="insights-kpi-label">Scenario</span>
+                      <strong>{activeScenario.label}</strong>
+                      <span className="insights-kpi-subtitle">
+                        {activeScenario.narrative}
+                      </span>
+                    </div>
+                    <div className="insights-kpi">
+                      <span className="insights-kpi-label">Top signal</span>
+                      <strong>{copilotModel.drivers[0]?.label ?? "Add context"}</strong>
+                      <span className="insights-kpi-subtitle">
+                        {copilotModel.executiveSummary}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="insights-columns">
+                    <div className="insights-column">
+                      <div className="insights-column-header">
+                        <h4>Cost drivers</h4>
+                        <span>{copilotModel.drivers.length} signals</span>
+                      </div>
+                      {driverGroups.length ? (
+                        driverGroups.map((group) => (
+                          <div key={group.category} className="insights-group">
+                            <div className="insights-group-title">{group.category}</div>
+                            <div className="insights-group-items">
+                              {group.items.map((item) => (
+                                <div key={item.id} className={`insights-item insights-item--${item.impact}`}>
+                                  <div className="insights-item-head">
+                                    <strong>{item.label}</strong>
+                                    <span className={`insights-impact insights-impact--${item.impact}`}>
+                                      {item.impact}
+                                    </span>
+                                  </div>
+                                  <p>{item.description}</p>
+                                  <span className="insights-meta">
+                                    Sources: {item.sources.join(", ") || "Workspace"}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="insights-empty">
+                          Add more detail to surface stronger drivers.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="insights-column">
+                      <div className="insights-column-header">
+                        <h4>Cost savings</h4>
+                        <span>{copilotModel.savings.length} levers</span>
+                      </div>
+                      {savingsGroups.length ? (
+                        savingsGroups.map((group) => (
+                          <div key={group.category} className="insights-group insights-group--savings">
+                            <div className="insights-group-title">{group.category}</div>
+                            <div className="insights-group-items">
+                              {group.items.map((item) => (
+                                <div key={item.id} className={`insights-item insights-item--${item.impact}`}>
+                                  <div className="insights-item-head">
+                                    <strong>{item.label}</strong>
+                                    <span className={`insights-impact insights-impact--${item.impact}`}>
+                                      {item.impact}
+                                    </span>
+                                  </div>
+                                  <p>{item.description}</p>
+                                  <span className="insights-meta">
+                                    Sources: {item.sources.join(", ") || "Workspace"}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="insights-empty">
+                          Capture reuse, optimization, or managed-service levers to highlight savings.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </section>
+
                 {editorIsMarkdown ? (
                   <MarkdownEditor
                     markdown={
