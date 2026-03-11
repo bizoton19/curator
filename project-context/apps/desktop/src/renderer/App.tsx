@@ -18,8 +18,7 @@ import {
   buildEstimateCopilotModel,
   formatCurrency,
   summarizeDiff,
-  type EstimateScenarioId,
-  type EstimateDriver
+  type EstimateScenarioId
 } from "./copilot";
 import helpKbRaw from "./kb/help.md?raw";
 
@@ -82,7 +81,29 @@ const CURATOR_EDITS_BLOCK_REGEX = /```curator_edits\s*\n([\s\S]*?)\n```/;
 type CuratorEdit = { file: string; content: string };
 type CuratorEditsPayload = { edits: CuratorEdit[] };
 type HelpSection = { title: string; body: string; keywords: string[] };
-type InsightGroup = { category: string; items: EstimateDriver[] };
+type InsightItem = {
+  label: string;
+  category: string;
+  impact: "high" | "medium" | "low";
+  description: string;
+  sources?: string[];
+};
+type InsightPayload = {
+  summary: string;
+  rangeLow: number;
+  rangeHigh: number;
+  confidence: number;
+  confidenceLabel: string;
+  scenarioLabel: string;
+  scenarioNarrative: string;
+  drivers: InsightItem[];
+  savings: InsightItem[];
+};
+type CuratorInsightsPayload = {
+  costEstimateMarkdown: string;
+  insights: InsightPayload;
+};
+type InsightGroup = { category: string; items: InsightItem[] };
 
 function parseCuratorEdits(message: string): CuratorEditsPayload | null {
   const match = message.match(CURATOR_EDITS_BLOCK_REGEX);
@@ -98,6 +119,21 @@ function parseCuratorEdits(message: string): CuratorEditsPayload | null {
 
 function stripCuratorEditsBlock(message: string): string {
   return message.replace(CURATOR_EDITS_BLOCK_REGEX, "").trim();
+}
+
+const CURATOR_INSIGHTS_BLOCK_REGEX = /```curator_insights\s*\n([\s\S]*?)\n```/;
+
+function parseCuratorInsights(message: string): CuratorInsightsPayload | null {
+  const match = message.match(CURATOR_INSIGHTS_BLOCK_REGEX);
+  const raw = match ? match[1].trim() : message.trim();
+  if (!raw.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(raw) as CuratorInsightsPayload;
+    if (!parsed?.costEstimateMarkdown || !parsed?.insights) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 function basenameLike(path: string): string {
@@ -170,8 +206,8 @@ function renderSnippet(snippet: string) {
   );
 }
 
-function groupInsights(items: EstimateDriver[]): InsightGroup[] {
-  const groups = new Map<string, EstimateDriver[]>();
+function groupInsights(items: InsightItem[]): InsightGroup[] {
+  const groups = new Map<string, InsightItem[]>();
   for (const item of items) {
     const key = item.category || "General";
     const existing = groups.get(key) ?? [];
@@ -835,7 +871,7 @@ export default function App() {
   const [showDocxFlow, setShowDocxFlow] = useState(false);
   const [selectedTemplatePath, setSelectedTemplatePath] = useState<string>("");
   const [docxStatus, setDocxStatus] = useState("");
-  const [docxMarkdownFile, setDocxMarkdownFile] =
+  const [costEstimateFile, setCostEstimateFile] =
     useState<WorkspaceSupplementalFile | null>(null);
   const [docxOutputPath, setDocxOutputPath] = useState("");
   const [docxReady, setDocxReady] = useState(false);
@@ -853,6 +889,10 @@ export default function App() {
   >([]);
   const [chatInput, setChatInput] = useState("");
   const [agentRefineActive, setAgentRefineActive] = useState(false);
+  const [mainTab, setMainTab] = useState<"editor" | "insights">("editor");
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsStatus, setInsightsStatus] = useState("");
+  const [aiInsights, setAiInsights] = useState<InsightPayload | null>(null);
   const [settingsProvider, setSettingsProvider] = useState("openrouter");
   const [settingsModel, setSettingsModel] = useState("openai/gpt-4o-mini");
   const [chatMode, setChatMode] = useState<"ask" | "agent">("agent");
@@ -1044,6 +1084,9 @@ export default function App() {
       setDrafts(nextDrafts);
       setFileSearch("");
       setFileSearchResults([]);
+      setMainTab("editor");
+      setAiInsights(null);
+      setInsightsStatus("");
       setShowWizard(shouldShowWizard);
       setShowDocxFlow(false);
       setWizardStep("baseline");
@@ -1762,25 +1805,8 @@ export default function App() {
 
     const contents = `# Cost Estimate\n\n## Summary\n- Project overview:\n- Scope highlights:\n\n## Assumptions\n- \n\n## Estimate Table\n| Item | Notes | Cost |\n| --- | --- | --- |\n|  |  |  |\n`;
     try {
-      const saved = await workspaceManager.createTextFile(
-        workspace,
-        "cost-estimate.md",
-        contents
-      );
-      setDocxMarkdownFile(saved);
+      await upsertCostEstimateFile(contents);
       setShowDocxFlow(true);
-      setWorkspace((current) => {
-        if (!current) return current;
-        const exists = current.markdownFiles.some(
-          (file) => file.path === saved.path
-        );
-        const updated = exists
-          ? current.markdownFiles
-          : [...current.markdownFiles, saved].sort((a, b) =>
-              a.name.localeCompare(b.name)
-            );
-        return { ...current, markdownFiles: updated };
-      });
       setDocxStatus("Cost estimate draft created.");
       setPermissionStatus("granted");
     } catch (error) {
@@ -1837,9 +1863,178 @@ export default function App() {
     }
   };
 
+  const upsertCostEstimateFile = async (contents: string) => {
+    if (!workspace) return null;
+    if (costEstimateFile) {
+      await workspaceManager.saveTextFile(
+        workspace,
+        costEstimateFile.path,
+        contents
+      );
+      return costEstimateFile;
+    }
+    const created = await workspaceManager.createTextFile(
+      workspace,
+      "cost-estimate.md",
+      contents
+    );
+    setCostEstimateFile(created);
+    setWorkspace((current) => {
+      if (!current) return current;
+      const exists = current.markdownFiles.some(
+        (file) => file.path === created.path
+      );
+      const updated = exists
+        ? current.markdownFiles
+        : [...current.markdownFiles, created].sort((a, b) =>
+            a.name.localeCompare(b.name)
+          );
+      return { ...current, markdownFiles: updated };
+    });
+    return created;
+  };
+
+  const regenerateCostEstimate = async () => {
+    if (!workspace) return;
+    setInsightsStatus("");
+    setInsightsLoading(true);
+    const permitted = await permissionGate.request({
+      resource: "workspace",
+      action: "write",
+      rationale: "Curator needs to update the cost estimate.",
+      workspacePath: workspaceRoot
+    });
+    if (!permitted) {
+      setPermissionStatus("denied");
+      setInsightsStatus("Permission denied.");
+      setInsightsLoading(false);
+      return;
+    }
+
+    try {
+      const config = await window.curator?.configGet();
+      if (!config?.apiKey) {
+        setInsightsStatus("Add an API key in Settings to generate estimates.");
+        setInsightsLoading(false);
+        return;
+      }
+
+      const contextParts: string[] = [];
+      if (drafts.baseline) {
+        contextParts.push(`## Baseline\n${drafts.baseline}`);
+      }
+      if (drafts.requirements) {
+        contextParts.push(`## Requirements\n${drafts.requirements}`);
+      }
+      if (drafts.tasks) {
+        contextParts.push(`## Tasks\n${drafts.tasks}`);
+      }
+      const supplemental = [
+        ...(workspace?.contextDocuments ?? []),
+        ...(workspace?.markdownFiles ?? [])
+      ].slice(0, 6);
+      for (const doc of supplemental) {
+        try {
+          const { contents } = await workspaceManager.readTextFile(
+            workspace,
+            doc.path
+          );
+          if (contents?.trim()) {
+            const trimmed =
+              contents.length > 2000
+                ? `${contents.slice(0, 2000)}\n…(truncated)`
+                : contents;
+            contextParts.push(`## Supporting: ${doc.name}\n${trimmed}`);
+          }
+        } catch {
+          // ignore unreadable docs
+        }
+      }
+
+      const systemPrompt = `You are a cost estimation assistant. Produce a finance-ready cost estimate markdown plus an insights summary. Return ONLY a JSON payload in a code block with language "curator_insights".
+
+Schema:
+{
+  "costEstimateMarkdown": "markdown string",
+  "insights": {
+    "summary": "short executive summary",
+    "rangeLow": 123456,
+    "rangeHigh": 234567,
+    "confidence": 72,
+    "confidenceLabel": "Moderate confidence",
+    "scenarioLabel": "Expected",
+    "scenarioNarrative": "short sentence",
+    "drivers": [
+      {"label":"Labor shape","category":"Labor","impact":"high","description":"...","sources":["Baseline","Requirements"]}
+    ],
+    "savings": [
+      {"label":"Reuse existing assets","category":"Labor","impact":"medium","description":"...","sources":["Context docs"]}
+    ]
+  }
+}
+
+Rules:
+- Provide 3-5 drivers and 2-4 savings levers.
+- Categories should be short (Labor, Data volume, Operations, Infrastructure, Governance, Process).
+- Impacts must be one of: high, medium, low.
+- Use numeric USD values for rangeLow/rangeHigh.
+- Keep markdown concise and structured with headings and a cost table.`;
+
+      const response = await fetch(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${config.apiKey}`,
+            "HTTP-Referer": "https://curator.local",
+            "X-OpenRouter-Title": "Curator Cost Estimator",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: settingsModel,
+            messages: [
+              { role: "system", content: systemPrompt },
+              {
+                role: "user",
+                content: `Workspace context:\n${contextParts.join("\n\n")}`
+              }
+            ]
+          })
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(
+          errorData.error?.message || `API error: ${response.status}`
+        );
+      }
+
+      const data = await response.json();
+      const assistantMessage =
+        data.choices?.[0]?.message?.content || "No response received.";
+      const parsed = parseCuratorInsights(assistantMessage);
+      if (!parsed) {
+        throw new Error("Could not parse cost estimate response.");
+      }
+
+      await upsertCostEstimateFile(parsed.costEstimateMarkdown);
+      setAiInsights(parsed.insights);
+      setInsightsStatus("Cost estimate updated.");
+      setMainTab("insights");
+      setPermissionStatus("granted");
+    } catch (error) {
+      setInsightsStatus(
+        error instanceof Error ? error.message : "Estimate generation failed."
+      );
+    } finally {
+      setInsightsLoading(false);
+    }
+  };
+
   const startChatRefinement = async () => {
-    if (docxMarkdownFile) {
-      await openSupplementalFile(docxMarkdownFile);
+    if (costEstimateFile) {
+      await openSupplementalFile(costEstimateFile);
     }
     setRightPanelOpen(true);
     setRightPanelTab("chat");
@@ -2466,7 +2661,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
       setDefaultWorkspaceReady(true);
       window.curator?.configSet({ defaultWorkspaceReady: true });
     }
-    if (!docxMarkdownFile) {
+    if (!costEstimateFile) {
       await generateEstimateMarkdown();
     }
   };
@@ -2684,9 +2879,20 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
   }, [selectedTemplatePath, workspace?.templates]);
 
   useEffect(() => {
+    if (!workspace) {
+      setCostEstimateFile(null);
+      return;
+    }
+    const existing = workspace.markdownFiles.find(
+      (file) => file.name.toLowerCase() === "cost-estimate.md"
+    );
+    setCostEstimateFile(existing ?? null);
+  }, [workspace, workspace?.markdownFiles]);
+
+  useEffect(() => {
     setDocxReady(false);
     setDocxOutputPath("");
-  }, [selectedTemplatePath, docxMarkdownFile]);
+  }, [selectedTemplatePath, costEstimateFile]);
 
   useEffect(() => {
     setAgentRefineActive(rightPanelTab === "chat" && editorIsMarkdown);
@@ -2709,14 +2915,42 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
   );
 
   const activeScenario = copilotModel.scenarios[copilotScenario];
+  const fallbackInsights = useMemo<InsightPayload>(
+    () => ({
+      summary: copilotModel.executiveSummary,
+      rangeLow: activeScenario.low,
+      rangeHigh: activeScenario.high,
+      confidence: activeScenario.confidence,
+      confidenceLabel: copilotModel.confidenceLabel,
+      scenarioLabel: activeScenario.label,
+      scenarioNarrative: activeScenario.narrative,
+      drivers: copilotModel.drivers.map((driver) => ({
+        label: driver.label,
+        category: driver.category || "General",
+        impact: driver.impact,
+        description: driver.description,
+        sources: driver.sources
+      })),
+      savings: copilotModel.savings.map((saving) => ({
+        label: saving.label,
+        category: saving.category || "General",
+        impact: saving.impact,
+        description: saving.description,
+        sources: saving.sources
+      }))
+    }),
+    [activeScenario, copilotModel]
+  );
+  const insightsData = aiInsights ?? fallbackInsights;
   const driverGroups = useMemo(
-    () => groupInsights(copilotModel.drivers),
-    [copilotModel.drivers]
+    () => groupInsights(insightsData.drivers),
+    [insightsData.drivers]
   );
   const savingsGroups = useMemo(
-    () => groupInsights(copilotModel.savings),
-    [copilotModel.savings]
+    () => groupInsights(insightsData.savings),
+    [insightsData.savings]
   );
+  const insightsAvailable = Boolean(costEstimateFile);
 
   return (
     <div className="app">
@@ -3240,12 +3474,12 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                       DOCX.
                     </p>
                     <div className="setup-actions">
-                      {docxMarkdownFile ? (
+                      {costEstimateFile ? (
                         <>
                           <button
-                            onClick={() => openSupplementalFile(docxMarkdownFile)}
+                            onClick={() => openSupplementalFile(costEstimateFile)}
                           >
-                            Open {docxMarkdownFile.name}
+                            Open {costEstimateFile.name}
                           </button>
                           <span className="muted">
                             Ready to export.
@@ -3299,7 +3533,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                     <div className="setup-actions">
                       <button
                         onClick={generateDocx}
-                        disabled={!selectedTemplatePath || !docxMarkdownFile}
+                        disabled={!selectedTemplatePath || !costEstimateFile}
                       >
                         Generate DOCX
                       </button>
@@ -3926,202 +4160,243 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                   </button>
                 </div>
               </div>
-                {!workspace ? (
-                  <div className="editor-banner">
-                    Open a workspace to save. You can still edit locally.
+                <div className="main-tabs">
+                  <div className="main-tab-buttons">
+                    <button
+                      className={`main-tab ${mainTab === "editor" ? "main-tab--active" : ""}`}
+                      onClick={() => setMainTab("editor")}
+                    >
+                      Editor
+                    </button>
+                    <button
+                      className={`main-tab ${mainTab === "insights" ? "main-tab--active" : ""}`}
+                      onClick={() => setMainTab("insights")}
+                      disabled={!insightsAvailable}
+                    >
+                      Cost insights
+                    </button>
                   </div>
-                ) : null}
-
-                <section className="insights-panel">
-                  <div className="insights-header">
-                    <div>
-                      <span className="insights-kicker">Cost Insights</span>
-                      <h3>Drivers and savings levers</h3>
-                      <p className="muted">
-                        These insights update as you refine baseline, requirements, tasks, and context.
-                      </p>
-                    </div>
-                    <div className="insights-actions">
-                      <button className="ghost" onClick={openChatPanel}>
-                        Refine with chat
-                      </button>
-                    </div>
+                  <div className="main-tab-actions">
+                    <button
+                      className="ghost"
+                      onClick={regenerateCostEstimate}
+                      disabled={!workspace || insightsLoading}
+                    >
+                      {insightsAvailable ? "Regenerate cost estimate" : "Generate cost estimate"}
+                    </button>
+                    {insightsStatus ? (
+                      <span className="muted">{insightsStatus}</span>
+                    ) : null}
                   </div>
+                </div>
 
-                  <div className="insights-kpis">
-                    <div className="insights-kpi">
-                      <span className="insights-kpi-label">Recommended range</span>
-                      <strong>
-                        {formatCurrency(activeScenario.low)} –{" "}
-                        {formatCurrency(activeScenario.high)}
-                      </strong>
-                      <span className="insights-kpi-subtitle">
-                        {copilotModel.confidenceLabel} ({activeScenario.confidence}%)
-                      </span>
-                    </div>
-                    <div className="insights-kpi">
-                      <span className="insights-kpi-label">Scenario</span>
-                      <strong>{activeScenario.label}</strong>
-                      <span className="insights-kpi-subtitle">
-                        {activeScenario.narrative}
-                      </span>
-                    </div>
-                    <div className="insights-kpi">
-                      <span className="insights-kpi-label">Top signal</span>
-                      <strong>{copilotModel.drivers[0]?.label ?? "Add context"}</strong>
-                      <span className="insights-kpi-subtitle">
-                        {copilotModel.executiveSummary}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="insights-columns">
-                    <div className="insights-column">
-                      <div className="insights-column-header">
-                        <h4>Cost drivers</h4>
-                        <span>{copilotModel.drivers.length} signals</span>
+                {mainTab === "insights" ? (
+                  <section className="insights-panel">
+                    {!insightsAvailable ? (
+                      <div className="insights-empty">
+                        Generate a cost estimate to unlock insights.
                       </div>
-                      {driverGroups.length ? (
-                        driverGroups.map((group) => (
-                          <div key={group.category} className="insights-group">
-                            <div className="insights-group-title">{group.category}</div>
-                            <div className="insights-group-items">
-                              {group.items.map((item) => (
-                                <div key={item.id} className={`insights-item insights-item--${item.impact}`}>
-                                  <div className="insights-item-head">
-                                    <strong>{item.label}</strong>
-                                    <span className={`insights-impact insights-impact--${item.impact}`}>
-                                      {item.impact}
-                                    </span>
-                                  </div>
-                                  <p>{item.description}</p>
-                                  <span className="insights-meta">
-                                    Sources: {item.sources.join(", ") || "Workspace"}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="insights-empty">
-                          Add more detail to surface stronger drivers.
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="insights-column">
-                      <div className="insights-column-header">
-                        <h4>Cost savings</h4>
-                        <span>{copilotModel.savings.length} levers</span>
-                      </div>
-                      {savingsGroups.length ? (
-                        savingsGroups.map((group) => (
-                          <div key={group.category} className="insights-group insights-group--savings">
-                            <div className="insights-group-title">{group.category}</div>
-                            <div className="insights-group-items">
-                              {group.items.map((item) => (
-                                <div key={item.id} className={`insights-item insights-item--${item.impact}`}>
-                                  <div className="insights-item-head">
-                                    <strong>{item.label}</strong>
-                                    <span className={`insights-impact insights-impact--${item.impact}`}>
-                                      {item.impact}
-                                    </span>
-                                  </div>
-                                  <p>{item.description}</p>
-                                  <span className="insights-meta">
-                                    Sources: {item.sources.join(", ") || "Workspace"}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="insights-empty">
-                          Capture reuse, optimization, or managed-service levers to highlight savings.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </section>
-
-                {editorIsMarkdown ? (
-                  <MarkdownEditor
-                    markdown={
-                      activeEditor.kind === "core"
-                        ? drafts[activeEditor.id]
-                        : supplementalDrafts[activeEditor.file.path] ?? ""
-                    }
-                    onChange={(value) => {
-                      if (activeEditor.kind === "core") {
-                        setDrafts((current) => ({
-                          ...current,
-                          [activeEditor.id]: value
-                        }));
-                        return;
-                      }
-                      const path = activeEditor.file.path;
-                      setSupplementalDrafts((current) => ({
-                        ...current,
-                        [path]: value
-                      }));
-                    }}
-                    readOnly={false}
-                    placeholder="Start writing..."
-                    modeOverride={
-                      agentRefineActive && editorIsMarkdown ? "preview" : null
-                    }
-                  />
-                ) : (
-                  <PlainTextEditor
-                    value={
-                      activeEditor.kind === "supplemental"
-                        ? supplementalDrafts[activeEditor.file.path] ?? ""
-                        : ""
-                    }
-                    onChange={(value) => {
-                      if (activeEditor.kind !== "supplemental") return;
-                      const path = activeEditor.file.path;
-                      setSupplementalDrafts((current) => ({
-                        ...current,
-                        [path]: value
-                      }));
-                    }}
-                    readOnly={false}
-                    placeholder="Start writing..."
-                  />
-                )}
-                {csvPreviewEnabled && csvPreviewOpen ? (
-                  <div className="csv-preview">
-                    {csvPreviewRows ? (
-                      <table>
-                        <thead>
-                          <tr>
-                            {csvPreviewRows[0].map((cell, index) => (
-                              <th key={`head-${index}`}>{cell}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {csvPreviewRows.slice(1).map((row, rowIndex) => (
-                            <tr key={`row-${rowIndex}`}>
-                              {row.map((cell, cellIndex) => (
-                                <td key={`cell-${rowIndex}-${cellIndex}`}>
-                                  {cell}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
                     ) : (
-                      <div className="csv-empty">
-                        Not enough rows to render a table preview.
-                      </div>
+                      <>
+                        <div className="insights-header">
+                          <div>
+                            <span className="insights-kicker">Cost Insights</span>
+                            <h3>Drivers and savings levers</h3>
+                            <p className="muted">
+                              Insights refresh when you regenerate the estimate after edits.
+                            </p>
+                          </div>
+                          <div className="insights-actions">
+                            <button className="ghost" onClick={openChatPanel}>
+                              Refine with chat
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="insights-kpis">
+                          <div className="insights-kpi">
+                            <span className="insights-kpi-label">Recommended range</span>
+                            <strong>
+                              {formatCurrency(insightsData.rangeLow)} –{" "}
+                              {formatCurrency(insightsData.rangeHigh)}
+                            </strong>
+                            <span className="insights-kpi-subtitle">
+                              {insightsData.confidenceLabel} ({insightsData.confidence}%)
+                            </span>
+                          </div>
+                          <div className="insights-kpi">
+                            <span className="insights-kpi-label">Scenario</span>
+                            <strong>{insightsData.scenarioLabel}</strong>
+                            <span className="insights-kpi-subtitle">
+                              {insightsData.scenarioNarrative}
+                            </span>
+                          </div>
+                          <div className="insights-kpi">
+                            <span className="insights-kpi-label">Executive summary</span>
+                            <strong>{insightsData.summary}</strong>
+                            <span className="insights-kpi-subtitle">
+                              {copilotModel.headline}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="insights-columns">
+                          <div className="insights-column">
+                            <div className="insights-column-header">
+                              <h4>Cost drivers</h4>
+                              <span>{insightsData.drivers.length} signals</span>
+                            </div>
+                            {driverGroups.length ? (
+                              driverGroups.map((group) => (
+                                <div key={group.category} className="insights-group">
+                                  <div className="insights-group-title">{group.category}</div>
+                                  <div className="insights-group-items">
+                                    {group.items.map((item) => (
+                                      <div key={item.label} className={`insights-item insights-item--${item.impact}`}>
+                                        <div className="insights-item-head">
+                                          <strong>{item.label}</strong>
+                                          <span className={`insights-impact insights-impact--${item.impact}`}>
+                                            {item.impact}
+                                          </span>
+                                        </div>
+                                        <p>{item.description}</p>
+                                        <span className="insights-meta">
+                                          Sources: {item.sources?.join(", ") || "Workspace"}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="insights-empty">
+                                Add more detail to surface stronger drivers.
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="insights-column">
+                            <div className="insights-column-header">
+                              <h4>Cost savings</h4>
+                              <span>{insightsData.savings.length} levers</span>
+                            </div>
+                            {savingsGroups.length ? (
+                              savingsGroups.map((group) => (
+                                <div key={group.category} className="insights-group insights-group--savings">
+                                  <div className="insights-group-title">{group.category}</div>
+                                  <div className="insights-group-items">
+                                    {group.items.map((item) => (
+                                      <div key={item.label} className={`insights-item insights-item--${item.impact}`}>
+                                        <div className="insights-item-head">
+                                          <strong>{item.label}</strong>
+                                          <span className={`insights-impact insights-impact--${item.impact}`}>
+                                            {item.impact}
+                                          </span>
+                                        </div>
+                                        <p>{item.description}</p>
+                                        <span className="insights-meta">
+                                          Sources: {item.sources?.join(", ") || "Workspace"}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="insights-empty">
+                                Capture reuse, optimization, or managed-service levers to highlight savings.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </>
                     )}
-                  </div>
-                ) : null}
+                  </section>
+                ) : (
+                  <>
+                    {!workspace ? (
+                      <div className="editor-banner">
+                        Open a workspace to save. You can still edit locally.
+                      </div>
+                    ) : null}
+                    {editorIsMarkdown ? (
+                      <MarkdownEditor
+                        markdown={
+                          activeEditor.kind === "core"
+                            ? drafts[activeEditor.id]
+                            : supplementalDrafts[activeEditor.file.path] ?? ""
+                        }
+                        onChange={(value) => {
+                          if (activeEditor.kind === "core") {
+                            setDrafts((current) => ({
+                              ...current,
+                              [activeEditor.id]: value
+                            }));
+                            return;
+                          }
+                          const path = activeEditor.file.path;
+                          setSupplementalDrafts((current) => ({
+                            ...current,
+                            [path]: value
+                          }));
+                        }}
+                        readOnly={false}
+                        placeholder="Start writing..."
+                        modeOverride={
+                          agentRefineActive && editorIsMarkdown ? "preview" : null
+                        }
+                      />
+                    ) : (
+                      <PlainTextEditor
+                        value={
+                          activeEditor.kind === "supplemental"
+                            ? supplementalDrafts[activeEditor.file.path] ?? ""
+                            : ""
+                        }
+                        onChange={(value) => {
+                          if (activeEditor.kind !== "supplemental") return;
+                          const path = activeEditor.file.path;
+                          setSupplementalDrafts((current) => ({
+                            ...current,
+                            [path]: value
+                          }));
+                        }}
+                        readOnly={false}
+                        placeholder="Start writing..."
+                      />
+                    )}
+                    {csvPreviewEnabled && csvPreviewOpen ? (
+                      <div className="csv-preview">
+                        {csvPreviewRows ? (
+                          <table>
+                            <thead>
+                              <tr>
+                                {csvPreviewRows[0].map((cell, index) => (
+                                  <th key={`head-${index}`}>{cell}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {csvPreviewRows.slice(1).map((row, rowIndex) => (
+                                <tr key={`row-${rowIndex}`}>
+                                  {row.map((cell, cellIndex) => (
+                                    <td key={`cell-${rowIndex}-${cellIndex}`}>
+                                      {cell}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : (
+                          <div className="csv-empty">
+                            Not enough rows to render a table preview.
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                  </>
+                )}
               </div>
 
               {rightPanelOpen && (
@@ -4787,6 +5062,10 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                             : "Paste API key"
                         }
                       />
+                      <p className="muted">
+                        Leave blank to keep the saved key. Keys are stored
+                        securely and persist across sessions.
+                      </p>
                       <div className="setup-actions">
                         <button onClick={saveSettings}>Save settings</button>
                       </div>

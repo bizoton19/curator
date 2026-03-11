@@ -1441,6 +1441,52 @@ textarea {
   gap: 10px;
 }
 
+.main-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 16px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid var(--panel-border-soft);
+}
+
+.main-tab-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.main-tab {
+  border: 1px solid var(--panel-border);
+  background: #f3f4f6;
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.main-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.main-tab--active {
+  background: #0f1115;
+  color: #ffffff;
+  border-color: #0f1115;
+}
+
+.main-tab-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
 .insights-panel {
   margin: 18px 0 20px;
   padding: 18px;
