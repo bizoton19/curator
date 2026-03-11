@@ -1066,6 +1066,45 @@ textarea {
   line-height: 1.4;
 }
 
+.chat-bubble-content {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.chat-bubble-content p {
+  margin: 0 0 0.6em;
+}
+
+.chat-bubble-content p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-bubble-content ul,
+.chat-bubble-content ol {
+  margin: 0.4em 0 0.6em 1.2em;
+}
+
+.chat-bubble-content li {
+  margin: 0.25em 0;
+}
+
+.chat-bubble-content code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: rgba(15, 17, 21, 0.08);
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.chat-bubble-content pre {
+  font-family: var(--mono);
+  background: #0f1115;
+  color: #e5e7eb;
+  padding: 10px;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
 .chat-user {
   background: #0f1115;
   color: #ffffff;
@@ -1093,7 +1132,7 @@ textarea {
   border-radius: 10px;
   background: #ffffff;
   overflow: hidden;
-  min-height: 76px;
+  min-height: 140px;
 }
 
 .chat-composer-bar {
@@ -1130,13 +1169,13 @@ textarea {
 .chat-composer-editor-wrap {
   flex: 1;
   min-width: 0;
-  padding: 10px 10px 8px;
+  padding: 12px 12px 10px;
 }
 
 .chat-composer-input {
   width: 100%;
-  min-height: 26px;
-  max-height: 120px;
+  min-height: 90px;
+  max-height: 220px;
   padding: 0;
   border: none;
   background: transparent;
@@ -3032,6 +3071,15 @@ textarea {
 .pending-edit-btn--accept:hover {
   background: #d1fae5;
   border-color: #10b981;
+}
+
+.pending-edit-btn--preview {
+  color: #2563eb;
+}
+
+.pending-edit-btn--preview:hover {
+  background: #dbeafe;
+  border-color: #2563eb;
 }
 
 .pending-edit-btn--reject {

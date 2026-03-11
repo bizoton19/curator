@@ -226,6 +226,7 @@ function resolveWorkspaceEditTarget(
 ):
   | { kind: "core"; id: WorkspaceFileId; label: string }
   | { kind: "supplemental"; path: string; label: string }
+  | { kind: "newSupplemental"; name: string; label: string }
   | null {
   const ref = rawFileRef.trim();
   if (!ref) return null;
@@ -258,6 +259,11 @@ function resolveWorkspaceEditTarget(
     if (byPath || byName || byBasePath || byNormalizedName || byNormalizedStem) {
       return { kind: "supplemental", path: file.path, label: file.name };
     }
+  }
+
+  // Allow new supplemental file creation by filename (e.g., "risk-notes.md")
+  if (/\.[a-z0-9]+$/i.test(ref) && !ref.includes("/") && !ref.includes("\\")) {
+    return { kind: "newSupplemental", name: ref, label: ref };
   }
   return null;
 }
@@ -893,6 +899,7 @@ export default function App() {
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsStatus, setInsightsStatus] = useState("");
   const [aiInsights, setAiInsights] = useState<InsightPayload | null>(null);
+  const [previewEditId, setPreviewEditId] = useState<string | null>(null);
   const [settingsProvider, setSettingsProvider] = useState("openrouter");
   const [settingsModel, setSettingsModel] = useState("openai/gpt-4o-mini");
   const [chatMode, setChatMode] = useState<"ask" | "agent">("agent");
@@ -1133,6 +1140,7 @@ export default function App() {
           }
         }
       }
+      setPreviewEditId(null);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Open failed.");
     } finally {
@@ -1332,6 +1340,7 @@ export default function App() {
           ...prev,
           [edit.fileId as WorkspaceFileId]: edit.newContent
         }));
+        setActiveCoreFile(edit.fileId as WorkspaceFileId);
       } else if (edit.kind === "supplemental") {
         await window.curator?.saveTextFile({
           root: workspace.root,
@@ -1340,6 +1349,12 @@ export default function App() {
         });
         setSupplementalDrafts((prev) => ({ ...prev, [edit.fileId]: edit.newContent }));
         setSupplementalOriginals((prev) => ({ ...prev, [edit.fileId]: edit.newContent }));
+        const match =
+          workspace.markdownFiles.find((file) => file.path === edit.fileId) ||
+          workspace.contextDocuments.find((file) => file.path === edit.fileId);
+        if (match) {
+          await openSupplementalFile(match);
+        }
       } else {
         const created = await workspaceManager.createTextFile(
           workspace,
@@ -1357,10 +1372,14 @@ export default function App() {
         });
         setSupplementalDrafts((prev) => ({ ...prev, [created.path]: edit.newContent }));
         setSupplementalOriginals((prev) => ({ ...prev, [created.path]: edit.newContent }));
+        await openSupplementalFile(created);
       }
       
       // Remove from pending
       setPendingEdits(prev => prev.filter(p => p.id !== edit.id));
+      if (previewEditId === edit.id) {
+        setPreviewEditId(null);
+      }
       
       // Refresh workspace if needed
       await refreshActiveWorkspace();
@@ -1373,6 +1392,9 @@ export default function App() {
 
   const rejectEdit = (edit: PendingEdit) => {
     setPendingEdits((prev) => prev.filter((p) => p.id !== edit.id));
+    if (previewEditId === edit.id) {
+      setPreviewEditId(null);
+    }
     setStatusMessage(`Rejected changes to ${edit.label}`);
   };
 
@@ -2213,7 +2235,7 @@ When the user asks you to change, add, or update content in a file, ${
 {"edits":[{"file":"baseline","content":"full new content of the file"},{"file":"cost-estimate.md","content":"full new content"}]}
 \`\`\`
 
-Rules: Use "file" value "baseline", "requirements", or "tasks" for core documents; for supplemental files use either exact name (e.g. cost-estimate.md) or full path from the list above. Provide the complete new file content in "content". You can include multiple edits in one block. Also write a short human-readable reply before or after the block. If the user is only asking a question (no edit), respond normally without a curator_edits block.`;
+Rules: Use "file" value "baseline", "requirements", or "tasks" for core documents; for supplemental files use either exact name (e.g. cost-estimate.md) or full path from the list above. If you need to create a new file, specify the filename (e.g. risk-notes.md). Provide the complete new file content in "content". You can include multiple edits in one block. Also write a short human-readable reply before or after the block. If the user is only asking a question (no edit), respond normally without a curator_edits block.`;
 
       // Build conversation history for API
       const apiMessages = [
@@ -2272,9 +2294,12 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
             if (target.kind === "core") {
               originalContent = drafts[target.id] || "";
               fileId = target.id;
-            } else {
+            } else if (target.kind === "supplemental") {
               originalContent = supplementalDrafts[target.path] || "";
               fileId = target.path;
+            } else {
+              originalContent = "";
+              fileId = target.name;
             }
 
             newPending.push({
@@ -2807,26 +2832,45 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
     ? { title: "Tasks examples", markdown: TASKS_EXAMPLE }
     : null;
   const examplesOpen = Boolean(activeExample);
-  const activeEditorLabel =
-    activeEditor.kind === "core"
-      ? `${activeEditor.id}.md`
-      : activeEditor.file.name;
+  const previewEdit = previewEditId
+    ? pendingEdits.find((edit) => edit.id === previewEditId) ?? null
+    : null;
+  const previewingEdit = Boolean(previewEdit);
+  const previewExt = previewEdit ? getFileExtension(previewEdit.label) : "";
+  const activeEditorLabel = previewingEdit
+    ? `${previewEdit?.label ?? "Proposed update"} (preview)`
+    : activeEditor.kind === "core"
+    ? `${activeEditor.id}.md`
+    : activeEditor.file.name;
   const activeSupplementalPath =
     activeEditor.kind === "supplemental" ? activeEditor.file.path : "";
-  const activeSupplementalExt =
-    activeEditor.kind === "supplemental" ? activeEditor.file.ext : "";
+  const activeSupplementalExt = previewingEdit
+    ? previewExt
+    : activeEditor.kind === "supplemental"
+    ? activeEditor.file.ext
+    : "";
   const supplementalDirty =
+    !previewingEdit &&
     activeEditor.kind === "supplemental" &&
     supplementalDrafts[activeEditor.file.path] !==
       supplementalOriginals[activeEditor.file.path];
-  const editorIsMarkdown =
-    activeEditor.kind === "core" ? true : activeEditor.isMarkdown;
+  const editorIsMarkdown = previewingEdit
+    ? previewEdit?.kind === "core" ||
+      previewExt === ".md" ||
+      previewExt === ".markdown"
+    : activeEditor.kind === "core"
+    ? true
+    : activeEditor.isMarkdown;
   const csvPreviewEnabled =
+    !previewingEdit &&
     activeEditor.kind === "supplemental" &&
     (activeSupplementalExt === ".csv" ||
       activeSupplementalExt === ".tsv" ||
       activeSupplementalExt === ".xlsx");
   const activeDescription = (() => {
+    if (previewingEdit) {
+      return "Previewing proposed changes before applying to the workspace.";
+    }
     if (activeEditor.kind === "core") {
       return CORE_DESCRIPTIONS[activeEditor.id];
     }
@@ -4127,6 +4171,23 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                     </p>
                   </div>
                 <div className="editor-actions">
+                  {previewingEdit ? (
+                    <>
+                      <button onClick={() => previewEdit && acceptEdit(previewEdit)}>
+                        Apply changes
+                      </button>
+                      <button
+                        className="ghost"
+                        onClick={() => previewEdit && rejectEdit(previewEdit)}
+                      >
+                        Discard
+                      </button>
+                      <button className="ghost" onClick={() => setPreviewEditId(null)}>
+                        Exit preview
+                      </button>
+                    </>
+                  ) : (
+                    <>
                   {csvPreviewEnabled ? (
                     <button
                       className="ghost"
@@ -4158,6 +4219,8 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                   >
                     Save
                   </button>
+                    </>
+                  )}
                 </div>
               </div>
                 <div className="main-tabs">
@@ -4322,11 +4385,14 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                     {editorIsMarkdown ? (
                       <MarkdownEditor
                         markdown={
-                          activeEditor.kind === "core"
+                          previewingEdit
+                            ? previewEdit?.newContent ?? ""
+                            : activeEditor.kind === "core"
                             ? drafts[activeEditor.id]
                             : supplementalDrafts[activeEditor.file.path] ?? ""
                         }
                         onChange={(value) => {
+                          if (previewingEdit) return;
                           if (activeEditor.kind === "core") {
                             setDrafts((current) => ({
                               ...current,
@@ -4340,7 +4406,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                             [path]: value
                           }));
                         }}
-                        readOnly={false}
+                        readOnly={previewingEdit}
                         placeholder="Start writing..."
                         modeOverride={
                           agentRefineActive && editorIsMarkdown ? "preview" : null
@@ -4349,11 +4415,14 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                     ) : (
                       <PlainTextEditor
                         value={
-                          activeEditor.kind === "supplemental"
+                          previewingEdit
+                            ? previewEdit?.newContent ?? ""
+                            : activeEditor.kind === "supplemental"
                             ? supplementalDrafts[activeEditor.file.path] ?? ""
                             : ""
                         }
                         onChange={(value) => {
+                          if (previewingEdit) return;
                           if (activeEditor.kind !== "supplemental") return;
                           const path = activeEditor.file.path;
                           setSupplementalDrafts((current) => ({
@@ -4361,7 +4430,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                             [path]: value
                           }));
                         }}
-                        readOnly={false}
+                        readOnly={previewingEdit}
                         placeholder="Start writing..."
                       />
                     )}
@@ -4793,7 +4862,14 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                                       key={`${message.role}-${index}`}
                                       className={`chat-bubble chat-${message.role}`}
                                     >
-                                      {message.text}
+                                      <div
+                                        className="chat-bubble-content"
+                                        dangerouslySetInnerHTML={{
+                                          __html: editorController.markdownToHtml(
+                                            message.text
+                                          )
+                                        }}
+                                      />
                                     </div>
                                   ))
                                 ) : (
@@ -4829,8 +4905,8 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                               These changes were suggested by the estimator for this workspace. Review and apply when you are ready.
                             </p>
                           </div>
-                          <div className="pending-edits-list">
-                            {pendingEdits.map((edit) => {
+                              <div className="pending-edits-list">
+                                {pendingEdits.map((edit) => {
                               const diff = summarizeDiff(
                                 edit.originalContent,
                                 edit.newContent
@@ -4843,7 +4919,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                                   : edit.fileId.includes("context")
                                   ? "Context document"
                                   : "Supporting file";
-                              return (
+                                  return (
                                 <div key={edit.id} className="pending-edit-card">
                                   <div className="pending-edit-info">
                                     <span className="pending-edit-file">
@@ -4864,6 +4940,19 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                                     ) : null}
                                   </div>
                                   <div className="pending-edit-actions">
+                                    <button
+                                      className="pending-edit-btn pending-edit-btn--preview"
+                                      onClick={() => {
+                                        setPreviewEditId(edit.id);
+                                        setMainTab("editor");
+                                      }}
+                                      title="Preview this update"
+                                    >
+                                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <circle cx="12" cy="12" r="3" />
+                                        <path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6z" />
+                                      </svg>
+                                    </button>
                                     <button
                                       className="pending-edit-btn pending-edit-btn--accept"
                                       onClick={() => acceptEdit(edit)}
@@ -4924,7 +5013,7 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                                 }
                               }}
                               placeholder="Ask the estimator…"
-                              rows={2}
+                              rows={4}
                             />
                           </div>
                           <div className="chat-composer-bar">
