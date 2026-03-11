@@ -806,7 +806,11 @@ declare global {
         contextDocuments: { name: string; contents: string }[];
         costEstimate: string;
       }) => Promise<OpenResult>;
-      createWorkspace: (payload: { name: string }) => Promise<OpenResult>;
+      createWorkspace: (payload: {
+        name: string;
+        projectType?: string;
+        description?: string;
+      }) => Promise<OpenResult>;
       dbSaveMessage: (payload: { workspacePath: string; role: string; text: string }) => Promise<void>;
       dbGetMessages: (payload: { workspacePath: string }) => Promise<{ role: string; text: string; timestamp: number }[]>;
       dbSaveSnapshot: (payload: { workspacePath: string; fileId: string; content: string }) => Promise<void>;
@@ -856,6 +860,8 @@ export default function App() {
   const [fileSearchLoading, setFileSearchLoading] = useState(false);
   const [newWorkspaceModalOpen, setNewWorkspaceModalOpen] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
+  const [newWorkspaceType, setNewWorkspaceType] = useState("IT / Software");
+  const [newWorkspaceDescription, setNewWorkspaceDescription] = useState("");
   const [newContextOpen, setNewContextOpen] = useState(false);
   const [newContextName, setNewContextName] = useState("");
   const [newContextContents, setNewContextContents] = useState("");
@@ -1191,7 +1197,11 @@ export default function App() {
         throw new Error("Create workspace API not available");
       }
       
-      const entry = await window.curator.createWorkspace({ name });
+      const entry = await window.curator.createWorkspace({
+        name,
+        projectType: newWorkspaceType,
+        description: newWorkspaceDescription
+      });
       if (!entry) {
         setStatusMessage("Failed to create workspace.");
         return;
@@ -1210,6 +1220,7 @@ export default function App() {
       
       setNewWorkspaceModalOpen(false);
       setNewWorkspaceName("");
+      setNewWorkspaceDescription("");
       await loadWorkspace(summary, true, "add");
       if (trainingMode && trainingStepIndex === 1) {
         setTrainingStepIndex(2);
@@ -3052,8 +3063,9 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
             aria-label="Exit application"
           >
             <svg className="menu-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
-              <line x1="12" y1="2" x2="12" y2="12"/>
+              <path d="M9 6h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9" />
+              <path d="M16 12H3" />
+              <path d="M6 9l-3 3 3 3" />
             </svg>
           </button>
         </div>
@@ -5203,6 +5215,34 @@ Rules: Use "file" value "baseline", "requirements", or "tasks" for core document
                 <p className="muted">
                   This will create a new folder in your default workspaces directory.
                 </p>
+              </div>
+              <div className="field">
+                <label>Project Type</label>
+                <select
+                  className="text-input"
+                  value={newWorkspaceType}
+                  onChange={(e) => setNewWorkspaceType(e.target.value)}
+                >
+                  <option value="IT / Software">IT / Software</option>
+                  <option value="Data / Analytics">Data / Analytics</option>
+                  <option value="Infrastructure / Cloud">Infrastructure / Cloud</option>
+                  <option value="Hardware / IoT">Hardware / IoT</option>
+                  <option value="Construction">Construction</option>
+                  <option value="Operations / Process">Operations / Process</option>
+                </select>
+                <p className="muted">
+                  Used to pre-fill baseline, requirements, and tasks.
+                </p>
+              </div>
+              <div className="field">
+                <label>Brief Description</label>
+                <textarea
+                  className="text-input"
+                  value={newWorkspaceDescription}
+                  onChange={(e) => setNewWorkspaceDescription(e.target.value)}
+                  placeholder="One or two sentences about the project goals and scope."
+                  rows={3}
+                />
               </div>
               <div className="action-row" style={{ marginTop: "16px", justifyContent: "flex-end" }}>
                 <button className="ghost" onClick={() => setNewWorkspaceModalOpen(false)}>

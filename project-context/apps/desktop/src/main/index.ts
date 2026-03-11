@@ -324,20 +324,90 @@ const saveRegistry = async (registry: WorkspaceRegistry) => {
   await writeFile(registryPath, JSON.stringify(registry, null, 2), "utf-8");
 };
 
+const buildWorkspaceTemplates = (payload?: {
+  projectType?: string;
+  description?: string;
+  name?: string;
+}) => {
+  const projectType = payload?.projectType?.trim() || "IT / Software";
+  const description =
+    payload?.description?.trim() ||
+    "Example: Modernize a legacy line-of-business system and migrate reporting to the cloud.";
+  const projectName = payload?.name?.trim() || "Project";
+  const baseline = `# Baseline
+
+## Project Overview
+${projectName} is a ${projectType} engagement. ${description}
+
+## Scope
+- Core system modernization and integration
+- Data migration and reporting alignment
+- Security and compliance controls
+
+## Assumptions
+- Access to SMEs and current architecture
+- Existing environments are available for discovery
+- Target timeline is within two quarters
+`;
+
+  const requirements = `# Requirements
+
+## Goals
+- Define a defensible cost estimate for ${projectName}
+- Clarify scope, constraints, and success criteria
+
+## Success Criteria
+- Approved estimate with clear cost drivers
+- Documented assumptions and risks
+- Executive-ready summary for finance review
+
+## Constraints
+- Delivery timeline within 2 quarters
+- Minimize downtime during cutover
+- Compliance with security policies
+`;
+
+  const tasks = `# Tasks
+
+## PLAN
+- Review baseline and requirements
+- Identify missing context and rate cards
+- Confirm scope boundaries and assumptions
+
+## EXECUTE
+- Analyze architecture and integration points
+- Break down workstreams by phase
+- Build estimate table with ranges
+
+## REVIEW
+- Validate cost drivers and savings levers
+- Document risks, unknowns, and dependencies
+
+## REFINE
+- Adjust estimate based on stakeholder feedback
+- Finalize summary and export-ready output
+`;
+
+  return { baseline, requirements, tasks };
+};
+
 const createWorkspaceEntry = async (
   id: string,
   name: string,
-  root: string
+  root: string,
+  template?: { projectType?: string; description?: string; name?: string }
 ) => {
+  const templates = buildWorkspaceTemplates({
+    projectType: template?.projectType,
+    description: template?.description,
+    name
+  });
   await ensureDir(root);
   await ensureDir(join(root, CONTEXT_DIR));
   await ensureDir(join(root, TEMPLATE_DIR));
-  await ensureFile(
-    join(root, "baseline.md"),
-    "# Baseline\n\n## Project Overview\n\n## Scope\n\n## Assumptions\n\n"
-  );
-  await ensureFile(join(root, "requirements.md"), "# Requirements\n\n");
-  await ensureFile(join(root, "tasks.md"), "# Tasks\n\n");
+  await ensureFile(join(root, "baseline.md"), templates.baseline);
+  await ensureFile(join(root, "requirements.md"), templates.requirements);
+  await ensureFile(join(root, "tasks.md"), templates.tasks);
   return { id, name, path: root };
 };
 
@@ -353,7 +423,12 @@ const ensureDefaultWorkspace = async () => {
     const entry = await createWorkspaceEntry(
       DEFAULT_WORKSPACE_ID,
       DEFAULT_WORKSPACE_NAME,
-      root
+      root,
+      {
+        projectType: "IT / Software",
+        description:
+          "Example: Modernize a customer onboarding platform with new APIs, data pipelines, and compliance controls."
+      }
     );
     registry.workspaces.push(entry);
   }
@@ -543,7 +618,12 @@ ipcMain.handle(
   }
 );
 
-ipcMain.handle("fs:createWorkspace", async (_event, payload: { name: string }) => {
+ipcMain.handle(
+  "fs:createWorkspace",
+  async (
+    _event,
+    payload: { name: string; projectType?: string; description?: string }
+  ) => {
   if (!payload?.name) throw new Error("Workspace name is required");
   
   const safeName = sanitizeFilename(payload.name);
@@ -570,7 +650,10 @@ ipcMain.handle("fs:createWorkspace", async (_event, payload: { name: string }) =
   try {
     await ensureDir(root);
     const id = `${safeName.toLowerCase()}-${Date.now()}`;
-    const entry = await createWorkspaceEntry(id, payload.name, root);
+    const entry = await createWorkspaceEntry(id, payload.name, root, {
+      projectType: payload.projectType,
+      description: payload.description
+    });
     
     registry.workspaces.push(entry);
     registry.activeId = entry.id;
